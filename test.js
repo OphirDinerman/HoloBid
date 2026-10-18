@@ -355,3 +355,25 @@ test('auctions cannot be deleted by anyone; history shows photos', async () => {
   assert.ok(h && h.n >= 3, 'history row has id and photo count');
   for (let i = 0; i < h.n; i++) assert.equal((await fetch(`${base}/api/img/${h.id}/${i}`)).status, 200, 'photo ' + i + ' served');
 });
+
+test('seller sets the minimum raise between bids', async () => {
+  const s = await signup('Inc Seller', '0501119301'), b1 = await signup('Inc B1', '0501119302'), b2 = await signup('Inc B2', '0501119303');
+  assert.equal((await call(s, 'POST', '/api/auctions', listing({ title: 'Bad inc', inc: 0 }))).s, 400, 'zero raise refused');
+  assert.equal((await call(s, 'POST', '/api/auctions', listing({ title: 'Bad inc 2', inc: -5 }))).s, 400);
+  assert.equal((await call(s, 'POST', '/api/auctions', listing({ title: 'Bad inc 3', inc: 'abc' }))).s, 400);
+  const mk = await call(s, 'POST', '/api/auctions', listing({ title: 'Raise 10', start: 100, inc: 10 })); assert.equal(mk.s, 200);
+  const id = mk.j.id, bid = (t, amount) => call(t, 'POST', `/api/auctions/${id}/bids`, { amount, pickup: true });
+  assert.equal((await call(b1, 'GET', '/api/state')).j.auctions.find(x => x.id === id).inc, 10, 'raise is shown to bidders');
+  assert.equal((await bid(b1, 99)).s >= 400, true, 'below the start refused');
+  assert.equal((await bid(b1, 100)).s, 200, 'first bid at the start price');
+  assert.equal((await bid(b2, 101)).s >= 400, true, '101 refused');
+  assert.equal((await bid(b2, 109)).s >= 400, true, '109 refused');
+  assert.equal((await bid(b2, 112)).s, 200, '112 accepted (more than 10 above is fine)');
+  assert.equal((await bid(b1, 121)).s >= 400, true, '121 refused (needs 122)');
+  assert.equal((await bid(b1, 122)).s, 200, 'exactly 10 above accepted');
+  const big = await call(s, 'POST', '/api/auctions', listing({ title: 'Raise 50', start: 100, inc: 50 })); const id2 = big.j.id;
+  await call(b1, 'POST', `/api/auctions/${id2}/bids`, { amount: 100, pickup: true });
+  assert.equal((await call(b2, 'POST', `/api/auctions/${id2}/bids`, { amount: 149, pickup: true })).s >= 400, true, 'custom raise 50 enforced');
+  assert.equal((await call(b2, 'POST', `/api/auctions/${id2}/bids`, { amount: 150, pickup: true })).s, 200);
+  const dflt = await call(s, 'POST', '/api/auctions', listing({ title: 'No inc given' })); assert.equal((await call(b1, 'GET', '/api/state')).j.auctions.find(x => x.id === dflt.j.id).inc, 10, 'default stays 10');
+});

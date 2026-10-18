@@ -229,6 +229,8 @@ app.post('/api/auctions', auth, ready('Blocked accounts cannot list.'), (req, re
   if (city.length < 2) return fail(res, 400, 'Enter the pickup city.');
   if (!['card', 'booster'].includes(b.type)) return fail(res, 400, 'Pick an item type.');
   if (!(hrs >= 0.5 && hrs <= 168)) return fail(res, 400, 'Pick a duration.');
+  const incIn = b.inc === undefined || b.inc === '' || b.inc === null ? (st >= 500 ? 25 : 10) : Math.floor(+b.inc);
+  if (!(incIn >= 1 && incIn <= 100000)) return fail(res, 400, 'Set the minimum raise between bids (1 or more).');
   const imgs = Array.isArray(b.imgs) ? b.imgs.slice(0, 10) : [];
   if (imgs.length < 2) return fail(res, 400, 'Add at least 2 photos.');
   let parsed;
@@ -246,7 +248,7 @@ app.post('/api/auctions', auth, ready('Blocked accounts cannot list.'), (req, re
     const t = now();
     const r = db.prepare('INSERT INTO auctions(seller_id,type,title,set_name,cond,info,start_price,inc,ship_fee,ship_by,ref_price,end_at,current_price,img_count,created,city) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
       .run(u.id, b.type, title, String(b.set || '').trim().slice(0, 100) || 'Unknown set', String(b.cond || '').trim().slice(0, 60) || 'Not stated', String(b.info || '').trim().slice(0, 2000),
-        st, st >= 500 ? 25 : 10, mode === 'pickup' ? 0 : sh, mode, 0, t + hrs * 3600000, st, parsed.length, t, city);
+        st, incIn, mode === 'pickup' ? 0 : sh, mode, 0, t + hrs * 3600000, st, parsed.length, t, city);
     db.prepare('UPDATE auctions SET pickup_note=? WHERE id=?').run(String(b.pickupNote || '').trim().replace(/\s+/g, ' ').slice(0, 120) || null, r.lastInsertRowid);
     parsed.forEach((p, i) => db.prepare('INSERT INTO images VALUES(?,?,?,?)').run(r.lastInsertRowid, i, p.mime, p.buf));
     return r.lastInsertRowid;
