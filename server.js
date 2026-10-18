@@ -9,6 +9,7 @@ const ADMINS = (env.ADMIN_FB_IDS || '').split(',').map(s => s.trim()).filter(Boo
 if (!DEV && !env.JWT_SECRET) console.warn('WARNING: JWT_SECRET is not set. Sessions will reset on every restart.');
 
 const db = new Database(env.DB_FILE || 'holobid.db');
+console.log('Database file: ' + path.resolve(env.DB_FILE || 'holobid.db') + ((env.DB_FILE || '').startsWith('/data/') ? ' (persistent disk path)' : ' (WARNING: if this is not on a persistent disk, data is lost on every deploy)'));
 db.pragma('journal_mode = WAL');
 db.exec(`
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, fb_id TEXT UNIQUE NOT NULL, name TEXT NOT NULL, phone TEXT UNIQUE, phone_verified INTEGER DEFAULT 0, tos_at INTEGER, tos_version TEXT, blocked INTEGER DEFAULT 0, created INTEGER);
@@ -28,15 +29,26 @@ CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
 `);
 const addCol = (t, c, d) => { if (!db.prepare(`PRAGMA table_info(${t})`).all().some(x => x.name === c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${d}`); };
 addCol('auctions', 'city', 'TEXT'); addCol('auctions', 'leader_pickup', 'INTEGER DEFAULT 0'); addCol('bids', 'pickup', 'INTEGER DEFAULT 0'); addCol('orders', 'pickup', 'INTEGER DEFAULT 0');
-addCol('users', 'email', 'TEXT'); addCol('users', 'notif_outbid', 'INTEGER DEFAULT 1'); addCol('users', 'notif_won', 'INTEGER DEFAULT 1'); addCol('users', 'notif_sold', 'INTEGER DEFAULT 1'); addCol('users', 'lang', "TEXT DEFAULT 'en'"); addCol('users', 'fb_handle', 'TEXT');
+db.exec(`
+CREATE TABLE IF NOT EXISTS avatars(user_id INTEGER PRIMARY KEY, mime TEXT, data BLOB);
+CREATE TABLE IF NOT EXISTS suggestions(id INTEGER PRIMARY KEY, user_id INTEGER, text TEXT, created INTEGER);
+CREATE TABLE IF NOT EXISTS suggestion_votes(sid INTEGER, user_id INTEGER, v INTEGER, PRIMARY KEY(sid, user_id));
+`);
+db.exec(`
+CREATE TRIGGER IF NOT EXISTS no_delete_auctions BEFORE DELETE ON auctions BEGIN SELECT RAISE(ABORT,'Auctions cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS no_delete_bids BEFORE DELETE ON bids BEGIN SELECT RAISE(ABORT,'Bids cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS no_delete_images BEFORE DELETE ON images BEGIN SELECT RAISE(ABORT,'Photos cannot be deleted'); END;
+`);
+addCol('auctions', 'pickup_note', 'TEXT'); addCol('users', 'avatar_key', 'TEXT');
+addCol('users', 'email', 'TEXT'); addCol('users', 'home_city', 'TEXT'); addCol('users', 'notif_outbid', 'INTEGER DEFAULT 1'); addCol('users', 'notif_won', 'INTEGER DEFAULT 1'); addCol('users', 'notif_sold', 'INTEGER DEFAULT 1'); addCol('users', 'lang', "TEXT DEFAULT 'en'"); addCol('users', 'fb_handle', 'TEXT');
 
 const now = () => Date.now();
 const sha = s => crypto.createHash('sha256').update(String(s)).digest('hex');
 const mask = n => n[0] + '***' + n.slice(-1);
 const adminEmails = () => (env.ADMIN_EMAILS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 const isAdmin = u => ADMINS.includes(u.fb_id) || (!!u.email && adminEmails().includes(String(u.email).toLowerCase()));
-const TOS_VERSION = '1.1'; // 1.1 added: phone and Facebook contact are shared with the other party after an auction
-const pub = u => ({ id: u.id, name: u.name, phone_verified: !!u.phone_verified, fb: !!u.fb_handle, tos: u.tos_version === TOS_VERSION, blocked: !!u.blocked, admin: isAdmin(u), phone: u.phone || null, fbh: u.fb_handle && u.fb_handle !== '-' ? u.fb_handle : null });
+const TOS_VERSION = '1.2'; // 1.2: phone and city are typed by the user (not verified) and shared with the other party after an auction
+const pub = u => ({ id: u.id, name: u.name, phone_verified: !!u.phone_verified, tos: u.tos_version === TOS_VERSION, blocked: !!u.blocked, admin: isAdmin(u), phone: u.phone || null, city: u.home_city || null, av: u.avatar_key ? '/api/avatar/' + u.avatar_key : null });
 const fail = (res, code, error) => res.status(code).json({ error });
 
 const app = express();
@@ -69,7 +81,7 @@ const auth = (req, res, next) => {
 const ready = (msg = 'Blocked accounts cannot do this.') => (req, res, next) => {
   const u = req.user;
   if (u.blocked) return fail(res, 403, msg);
-  if (!u.phone_verified || !u.fb_handle || u.tos_version !== TOS_VERSION) return fail(res, 403, 'Finish sign-up first.');
+  if (!u.phone_verified || u.tos_version !== TOS_VERSION) return fail(res, 403, 'Finish sign-up first.');
   next();
 };
 const adminOnly = (req, res, next) => isAdmin(req.user) ? next() : fail(res, 404, 'Not found'); // hidden from everyone else
@@ -151,69 +163,18 @@ const normPhone = s => {
   if (!d.startsWith('+')) d = (env.DEFAULT_CC || '+972') + d.replace(/^0/, '');
   return /^\+\d{9,15}$/.test(d) ? d : null;
 };
-async function sendSms(to, body) {
-  if (env.TWILIO_SID && env.TWILIO_TOKEN && env.TWILIO_FROM) {
-    const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_SID}/Messages.json`, {
-      method: 'POST',
-      headers: { Authorization: 'Basic ' + Buffer.from(env.TWILIO_SID + ':' + env.TWILIO_TOKEN).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ To: to, From: env.TWILIO_FROM, Body: body })
-    });
-    if (!r.ok) throw new Error('sms failed');
-    return {};
-  }
-  if (DEV) { console.log(`[dev sms] ${to}: ${body}`); return { dev: true }; }
-  throw new Error('SMS is not configured');
-}
-app.post('/api/auth/phone/start', auth, limit(20, 3600000), async (req, res) => {
-  const ph = normPhone(req.body.phone);
+// Sign-up details: city of residence and phone number. They are typed by the user (not verified) and shown only to the other party of an auction.
+app.post('/api/auth/details', auth, limit(30, 3600000), (req, res) => {
+  const ph = normPhone((req.body || {}).phone);
   if (!ph) return fail(res, 400, 'Enter a valid mobile number.');
-  if (db.prepare('SELECT id FROM users WHERE phone=? AND id!=?').get(ph, req.user.id)) return fail(res, 409, 'This number is already used by another account.');
-  const o = db.prepare('SELECT * FROM otps WHERE user_id=?').get(req.user.id) || {}, t = now();
-  if (o.sent_at && t - o.sent_at < 60000) return fail(res, 429, 'Wait a minute before asking for a new code.');
-  const inWindow = o.window_start && t - o.window_start < 3600000, count = inWindow ? o.sent_count : 0;
-  if (count >= 5) return fail(res, 429, 'Too many codes requested. Try again in an hour.');
-  const code = String(crypto.randomInt(100000, 1000000));
-  try { var out = await sendSms(ph, `Holo Bid code: ${code}`); } catch { return fail(res, 502, 'Could not send the SMS. Try again.'); }
-  db.prepare('INSERT OR REPLACE INTO otps(user_id,phone,code,expires,attempts,sent_at,sent_count,window_start) VALUES(?,?,?,?,0,?,?,?)')
-    .run(req.user.id, ph, sha(code), t + 300000, t, count + 1, inWindow ? o.window_start : t);
-  res.json({ ok: true, devCode: out.dev ? code : undefined });
-});
-app.post('/api/auth/phone/verify', auth, limit(30, 3600000), (req, res) => {
-  const o = db.prepare('SELECT * FROM otps WHERE user_id=?').get(req.user.id);
-  if (!o || o.expires < now()) return fail(res, 400, 'Code expired. Ask for a new one.');
-  if (o.attempts >= 5) return fail(res, 429, 'Too many attempts. Ask for a new code.');
-  db.prepare('UPDATE otps SET attempts=attempts+1 WHERE user_id=?').run(req.user.id);
-  if (sha(String(req.body.code || '').trim()) !== o.code) return fail(res, 400, 'Wrong code.');
-  try { db.prepare('UPDATE users SET phone=?, phone_verified=1 WHERE id=?').run(o.phone, req.user.id); }
+  const city = String((req.body || {}).city || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+  if (city.length < 2) return fail(res, 400, 'Enter your city of residence.');
+  try { db.prepare('UPDATE users SET phone=?, home_city=?, phone_verified=1 WHERE id=?').run(ph, city, req.user.id); } // phone_verified now means "details completed"
   catch { return fail(res, 409, 'This number is already used by another account.'); }
-  db.prepare('DELETE FROM otps WHERE user_id=?').run(req.user.id);
   res.json({ ok: true });
 });
-// Facebook Login only gives us an app-scoped ID that cannot be turned into a profile link, so people type their own profile link or username.
-function parseFb(s) {
-  s = String(s || '').trim().replace(/^@/, '');
-  if (!s) return null;
-  let h = s;
-  if (/^(https?:\/\/)?([\w-]+\.)*(facebook\.com|fb\.com|fb\.me|m\.me)\//i.test(s)) {
-    try {
-      const u = new URL(/^https?:/i.test(s) ? s : 'https://' + s), segs = u.pathname.split('/').filter(Boolean);
-      if (segs[0] === 'profile.php') h = u.searchParams.get('id') || '';
-      else if (segs[0] === 'people') h = segs.filter(x => /^\d{5,}$/.test(x)).pop() || '';
-      else h = segs[0] || '';
-    } catch { return null; }
-  }
-  return /^(\d{5,20}|[A-Za-z0-9.]{5,50})$/.test(h) && !/^(profile\.php|groups|pages|share|watch|marketplace|events|login|home\.php|story\.php)$/i.test(h) ? h : null;
-}
-app.post('/api/auth/fb-contact', auth, (req, res) => {
-  if (!req.user.phone_verified) return fail(res, 403, 'Finish sign-up first.');
-  if ((req.body || {}).skip) { db.prepare("UPDATE users SET fb_handle='-' WHERE id=?").run(req.user.id); return res.json({ ok: true, fb: null }); } // optional: '-' means skipped
-  const h = parseFb((req.body || {}).link);
-  if (!h) return fail(res, 400, 'Enter a valid Facebook profile link or username.');
-  db.prepare('UPDATE users SET fb_handle=? WHERE id=?').run(h, req.user.id);
-  res.json({ ok: true, fb: h });
-});
 app.post('/api/auth/tos', auth, (req, res) => {
-  if (!req.user.phone_verified || !req.user.fb_handle) return fail(res, 403, 'Finish sign-up first.');
+  if (!req.user.phone_verified) return fail(res, 403, 'Finish sign-up first.');
   const t = now();
   db.prepare('UPDATE users SET tos_at=?, tos_version=? WHERE id=?').run(t, TOS_VERSION, req.user.id);
   db.prepare('INSERT INTO tos_acceptances(user_id,version,at,ip,ua) VALUES(?,?,?,?,?)').run(req.user.id, TOS_VERSION, t, req.ip, String(req.headers['user-agent'] || '').slice(0, 200));
@@ -224,18 +185,18 @@ app.post('/api/auth/tos', auth, (req, res) => {
 function ser(a, uid) {
   const bids = db.prepare('SELECT b.amount, b.created, u.name FROM bids b JOIN users u ON u.id=b.bidder_id WHERE b.auction_id=? ORDER BY b.id DESC LIMIT 200').all(a.id)
     .reverse().map(b => ({ u: mask(b.name), a: b.amount, t: b.created }));
-  return { id: a.id, type: a.type, title: a.title, set: a.set_name, cond: a.cond, info: a.info, ship: a.ship_by === 'seller' ? 0 : a.ship_fee, by: a.ship_by === 'pickup' ? 'pickup' : 'both', city: a.city || '', start: a.start_price, inc: a.inc, end: a.end_at, bids, imgs: Array.from({ length: a.img_count }, (_, i) => `/api/img/${a.id}/${i}`), mine: a.seller_id === uid, lead: a.leader_id === uid };
+  return { id: a.id, type: a.type, title: a.title, set: a.set_name, cond: a.cond, info: a.info, ship: a.ship_by === 'seller' ? 0 : a.ship_fee, by: a.ship_by === 'pickup' ? 'pickup' : 'both', city: a.city || '', pn: a.pickup_note || '', start: a.start_price, inc: a.inc, end: a.end_at, bids, imgs: Array.from({ length: a.img_count }, (_, i) => `/api/img/${a.id}/${i}`), mine: a.seller_id === uid, lead: a.leader_id === uid };
 }
 app.get('/api/state', auth, (req, res) => {
   const u = req.user;
   const out = {
     now: now(), user: pub(u),
     auctions: db.prepare("SELECT * FROM auctions WHERE status='live' ORDER BY end_at").all().map(a => ser(a, u.id)),
-    past: db.prepare("SELECT type,title,set_name,current_price,bid_count,end_at FROM auctions WHERE status='closed' ORDER BY end_at DESC LIMIT 100").all()
-      .map(a => ({ type: a.type, title: a.title, set: a.set_name, price: a.bid_count ? a.current_price : 0, bids: a.bid_count, date: new Date(a.end_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) })),
+    past: db.prepare("SELECT id,type,title,set_name,current_price,bid_count,end_at,(SELECT COUNT(*) FROM images i WHERE i.auction_id=auctions.id) n FROM auctions WHERE status='closed' ORDER BY end_at DESC LIMIT 100").all()
+      .map(a => ({ id: a.id, n: a.n, type: a.type, title: a.title, set: a.set_name, price: a.bid_count ? a.current_price : 0, bids: a.bid_count, date: new Date(a.end_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) })),
     myBids: db.prepare('SELECT a.title, b.amount amt, b.created t FROM bids b JOIN auctions a ON a.id=b.auction_id WHERE b.bidder_id=? ORDER BY b.id DESC LIMIT 100').all(u.id).reverse(),
-    orders: db.prepare('SELECT o.*, a.title, a.city, bu.name bname, su.name sname, bu.phone bphone, NULLIF(bu.fb_handle,char(45)) bfb, su.phone sphone, NULLIF(su.fb_handle,char(45)) sfb FROM orders o JOIN auctions a ON a.id=o.auction_id JOIN users bu ON bu.id=o.buyer_id JOIN users su ON su.id=o.seller_id WHERE o.buyer_id=? OR o.seller_id=? ORDER BY o.id DESC').all(u.id, u.id)
-      .map(o => ({ id: o.id, aid: o.auction_id, title: o.title, buyer: o.bname, seller: o.sname, price: o.price, ship: o.ship_fee, by: o.ship_by === 'pickup' ? 'pickup' : 'both', pickup: !!o.pickup, other: o.buyer_id === u.id ? { name: o.sname, phone: o.sphone, fb: o.sfb } : { name: o.bname, phone: o.bphone, fb: o.bfb }, city: o.city || '', status: o.status, due: o.due_at, role: o.buyer_id === u.id ? 'buyer' : 'seller' })).reverse()
+    orders: db.prepare('SELECT o.*, a.title, a.city, bu.name bname, su.name sname, bu.phone bphone, bu.home_city bcity, bu.avatar_key bav, a.pickup_note pnote, su.phone sphone, su.home_city scity, su.avatar_key sav FROM orders o JOIN auctions a ON a.id=o.auction_id JOIN users bu ON bu.id=o.buyer_id JOIN users su ON su.id=o.seller_id WHERE o.buyer_id=? OR o.seller_id=? ORDER BY o.id DESC').all(u.id, u.id)
+      .map(o => ({ id: o.id, aid: o.auction_id, title: o.title, buyer: o.bname, seller: o.sname, price: o.price, ship: o.ship_fee, by: o.ship_by === 'pickup' ? 'pickup' : 'both', pickup: !!o.pickup, other: o.buyer_id === u.id ? { name: o.sname, phone: o.sphone, city: o.scity, av: o.sav ? '/api/avatar/' + o.sav : null } : { name: o.bname, phone: o.bphone, city: o.bcity, av: o.bav ? '/api/avatar/' + o.bav : null }, city: o.city || '', pn: o.pnote || '', status: o.status, due: o.due_at, role: o.buyer_id === u.id ? 'buyer' : 'seller' })).reverse()
   };
   out.myListings = db.prepare('SELECT a.id,a.type,a.title,a.status,a.current_price,a.bid_count,a.end_at,a.img_count,o.status ostatus FROM auctions a LEFT JOIN orders o ON o.auction_id=a.id WHERE a.seller_id=? ORDER BY a.id DESC LIMIT 100').all(u.id)
     .map(a => ({ id: a.id, type: a.type, title: a.title, status: a.status === 'live' ? 'live' : a.status === 'cancelled' ? 'cancelled' : a.bid_count ? 'sold' : 'unsold', price: a.status === 'live' || a.bid_count ? a.current_price : 0, bids: a.bid_count, end: a.end_at, img: a.img_count ? `/api/img/${a.id}/0` : null, order: a.ostatus || null }));
@@ -269,7 +230,7 @@ app.post('/api/auctions', auth, ready('Blocked accounts cannot list.'), (req, re
   if (!['card', 'booster'].includes(b.type)) return fail(res, 400, 'Pick an item type.');
   if (!(hrs >= 0.5 && hrs <= 168)) return fail(res, 400, 'Pick a duration.');
   const imgs = Array.isArray(b.imgs) ? b.imgs.slice(0, 10) : [];
-  if (imgs.length < 3) return fail(res, 400, 'Add at least 3 photos.');
+  if (imgs.length < 2) return fail(res, 400, 'Add at least 2 photos.');
   let parsed;
   try {
     parsed = imgs.map(s => {
@@ -286,6 +247,7 @@ app.post('/api/auctions', auth, ready('Blocked accounts cannot list.'), (req, re
     const r = db.prepare('INSERT INTO auctions(seller_id,type,title,set_name,cond,info,start_price,inc,ship_fee,ship_by,ref_price,end_at,current_price,img_count,created,city) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
       .run(u.id, b.type, title, String(b.set || '').trim().slice(0, 100) || 'Unknown set', String(b.cond || '').trim().slice(0, 60) || 'Not stated', String(b.info || '').trim().slice(0, 2000),
         st, st >= 500 ? 25 : 10, mode === 'pickup' ? 0 : sh, mode, 0, t + hrs * 3600000, st, parsed.length, t, city);
+    db.prepare('UPDATE auctions SET pickup_note=? WHERE id=?').run(String(b.pickupNote || '').trim().replace(/\s+/g, ' ').slice(0, 120) || null, r.lastInsertRowid);
     parsed.forEach((p, i) => db.prepare('INSERT INTO images VALUES(?,?,?,?)').run(r.lastInsertRowid, i, p.mime, p.buf));
     return r.lastInsertRowid;
   })();
@@ -401,10 +363,62 @@ app.post('/api/account/delete', auth, (req, res) => {
   if (db.prepare("SELECT 1 FROM auctions WHERE status='live' AND (seller_id=? OR leader_id=?)").get(u.id, u.id)) return fail(res, 409, 'You have live auctions. Wait until they end first.');
   if (db.prepare("SELECT 1 FROM orders WHERE (buyer_id=? OR seller_id=?) AND status NOT IN ('completed','resolved')").get(u.id, u.id)) return fail(res, 409, 'Finish your open orders first.');
   db.transaction(() => {
-    db.prepare("UPDATE users SET name='Deleted user', fb_id=?, phone=NULL, phone_verified=0, fb_handle=NULL, email=NULL, tos_at=NULL, tos_version=NULL WHERE id=?").run('deleted:' + u.id, u.id);
-    for (const t of ['push_subs', 'notifications', 'otps']) db.prepare(`DELETE FROM ${t} WHERE user_id=?`).run(u.id);
+    db.prepare("UPDATE users SET name='Deleted user', fb_id=?, phone=NULL, home_city=NULL, phone_verified=0, fb_handle=NULL, email=NULL, avatar_key=NULL, tos_at=NULL, tos_version=NULL WHERE id=?").run('deleted:' + u.id, u.id);
+    for (const t of ['push_subs', 'notifications', 'otps', 'avatars', 'suggestion_votes']) db.prepare(`DELETE FROM ${t} WHERE user_id=?`).run(u.id);
+    db.prepare('DELETE FROM suggestion_votes WHERE sid IN (SELECT id FROM suggestions WHERE user_id=?)').run(u.id); db.prepare('DELETE FROM suggestions WHERE user_id=?').run(u.id);
     db.prepare('INSERT INTO audit(actor,action,detail,ts) VALUES(?,?,?,?)').run(u.id, 'delete_account', '{}', now());
   })();
+  res.json({ ok: true });
+});
+
+// ---------- Profile picture ----------
+app.post('/api/profile/avatar', auth, ready(), limit(20, 3600000), (req, res) => {
+  const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String((req.body || {}).img || ''));
+  if (!m) return fail(res, 400, 'Photos must be JPEG, PNG or WebP.');
+  const buf = Buffer.from(m[2], 'base64');
+  if (buf.length > 250000) return fail(res, 400, 'A photo is too large.');
+  const key = crypto.randomBytes(12).toString('hex'); // unguessable address: only the other party of an auction ever receives it
+  db.transaction(() => { db.prepare('INSERT OR REPLACE INTO avatars VALUES(?,?,?)').run(req.user.id, m[1], buf); db.prepare('UPDATE users SET avatar_key=? WHERE id=?').run(key, req.user.id); })();
+  res.json({ ok: true, av: '/api/avatar/' + key });
+});
+app.delete('/api/profile/avatar', auth, (req, res) => {
+  db.transaction(() => { db.prepare('DELETE FROM avatars WHERE user_id=?').run(req.user.id); db.prepare('UPDATE users SET avatar_key=NULL WHERE id=?').run(req.user.id); })();
+  res.json({ ok: true });
+});
+app.get('/api/avatar/:key', (req, res) => {
+  const r = db.prepare('SELECT a.mime, a.data FROM avatars a JOIN users u ON u.id=a.user_id WHERE u.avatar_key=?').get(String(req.params.key));
+  if (!r) return res.sendStatus(404);
+  res.set('Cache-Control', 'public, max-age=31536000, immutable').type(r.mime).send(r.data);
+});
+
+// ---------- Suggestions for improvement (public list with like / dislike) ----------
+app.get('/api/suggestions', auth, ready(), (req, res) => {
+  const rows = db.prepare(`SELECT s.id, s.text, s.created, s.user_id, u.name,
+      COALESCE(SUM(CASE WHEN v.v=1 THEN 1 ELSE 0 END),0) up, COALESCE(SUM(CASE WHEN v.v=-1 THEN 1 ELSE 0 END),0) down,
+      (SELECT v FROM suggestion_votes WHERE sid=s.id AND user_id=?) mine
+    FROM suggestions s JOIN users u ON u.id=s.user_id LEFT JOIN suggestion_votes v ON v.sid=s.id
+    GROUP BY s.id ORDER BY (up-down) DESC, s.created DESC LIMIT 200`).all(req.user.id);
+  res.json(rows.map(r => ({ id: r.id, text: r.text, t: r.created, by: mask(r.name), up: r.up, down: r.down, mine: r.mine || 0, own: r.user_id === req.user.id })));
+});
+app.post('/api/suggestions', auth, ready(), limit(30, 3600000), (req, res) => {
+  const text = String((req.body || {}).text || '').trim().replace(/[ \t]+/g, ' ').slice(0, 500);
+  if (text.length < 5) return fail(res, 400, 'Write at least a few words.');
+  if (db.prepare('SELECT COUNT(*) c FROM suggestions WHERE user_id=? AND created>?').get(req.user.id, now() - 86400000).c >= 5) return fail(res, 429, 'You can send up to 5 suggestions per day.');
+  const id = db.prepare('INSERT INTO suggestions(user_id,text,created) VALUES(?,?,?)').run(req.user.id, text, now()).lastInsertRowid;
+  res.json({ ok: true, id });
+});
+app.post('/api/suggestions/:id/vote', auth, ready(), limit(300, 3600000), (req, res) => {
+  const id = +req.params.id, v = +(req.body || {}).v;
+  if (![1, -1, 0].includes(v)) return fail(res, 400, 'Not allowed.');
+  if (!db.prepare('SELECT 1 FROM suggestions WHERE id=?').get(id)) return fail(res, 404, 'Not found');
+  if (v === 0) db.prepare('DELETE FROM suggestion_votes WHERE sid=? AND user_id=?').run(id, req.user.id);
+  else db.prepare('INSERT OR REPLACE INTO suggestion_votes VALUES(?,?,?)').run(id, req.user.id, v);
+  res.json({ ok: true });
+});
+app.delete('/api/suggestions/:id', auth, (req, res) => {
+  const id = +req.params.id, s = db.prepare('SELECT user_id FROM suggestions WHERE id=?').get(id);
+  if (!s || (s.user_id !== req.user.id && !isAdmin(req.user))) return fail(res, 404, 'Not found');
+  db.transaction(() => { db.prepare('DELETE FROM suggestion_votes WHERE sid=?').run(id); db.prepare('DELETE FROM suggestions WHERE id=?').run(id); if (s.user_id !== req.user.id) db.prepare('INSERT INTO audit(actor,action,detail,ts) VALUES(?,?,?,?)').run(req.user.id, 'delete_suggestion', JSON.stringify({ id }), now()); })();
   res.json({ ok: true });
 });
 
@@ -419,6 +433,22 @@ for (const pg of ['privacy', 'terms', 'data-deletion']) {
     } catch { res.sendStatus(404); }
   });
 }
+// Share link: /a/<id> serves the app with Open Graph tags so WhatsApp / Facebook groups show a preview (title, price, photo)
+const escH = x => String(x == null ? '' : x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+app.get('/a/:id', (req, res, next) => {
+  if (!/^\d{1,12}$/.test(req.params.id)) return next();
+  let html;
+  try { html = fs.readFileSync(path.join(WEB, 'index.html'), 'utf8'); } catch { return res.sendStatus(404); }
+  const a = db.prepare('SELECT id,title,set_name,cond,current_price,start_price,status,img_count,city,end_at FROM auctions WHERE id=?').get(+req.params.id);
+  if (a) {
+    const site = (env.SITE_URL || (req.protocol + '://' + req.get('host'))).replace(/\/$/, '');
+    const live = a.status === 'live' && a.end_at > now();
+    const desc = [a.set_name, a.cond, a.city ? 'Item location: ' + a.city : '', (live ? 'Current bid ' : 'Closed at ') + '\u20aa' + (a.current_price || a.start_price)].filter(Boolean).join(' | ');
+    const tags = `<meta property="og:type" content="website"><meta property="og:site_name" content="${escH(env.SITE_NAME || 'Holo Bid')}"><meta property="og:title" content="${escH(a.title)}"><meta property="og:description" content="${escH(desc)}"><meta property="og:url" content="${escH(site + '/a/' + a.id)}">${a.img_count ? `<meta property="og:image" content="${escH(site + '/api/img/' + a.id + '/0')}"><meta name="twitter:card" content="summary_large_image">` : ''}`;
+    html = html.replace(/<title>[^<]*<\/title>/, '<title>' + escH(a.title) + ' | Holo Bid</title>').replace('</head>', tags + '</head>');
+  }
+  res.set('Cache-Control', 'no-cache').type('html').send(html);
+});
 if (FLAT) {
   app.get(['/', '/index.html', '/sw.js', '/icon.svg', '/manifest.webmanifest'], (req, res) => res.sendFile(path.join(__dirname, req.path === '/' ? 'index.html' : req.path.slice(1))));
 } else app.use(express.static(WEB));
