@@ -1,6 +1,6 @@
 'use strict';
-const express = require('express'), http = require('http'), crypto = require('crypto'), path = require('path');
-const jwt = require('jsonwebtoken'), Database = require('better-sqlite3'), { WebSocketServer } = require('ws');
+const express = require('express'), http = require('http'), crypto = require('crypto'), path = require('path'), fs = require('fs');
+const jwt = require('jsonwebtoken'), Database = require('better-sqlite3'), { WebSocketServer } = require('ws'), webpush = require('web-push');
 
 const env = process.env;
 const DEV = env.DEV_AUTH === '1';
@@ -21,22 +21,36 @@ CREATE INDEX IF NOT EXISTS bids_a ON bids(auction_id);
 CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY, auction_id INTEGER UNIQUE, buyer_id INTEGER, seller_id INTEGER, price INTEGER, ship_fee INTEGER, ship_by TEXT, status TEXT, due_at INTEGER, created INTEGER);
 CREATE TABLE IF NOT EXISTS cases(id INTEGER PRIMARY KEY, order_id INTEGER, reported_id INTEGER, opened_by INTEGER, why TEXT, status TEXT DEFAULT 'open', note TEXT, resolved_by INTEGER, created INTEGER);
 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, actor INTEGER, action TEXT, detail TEXT, ts INTEGER);
+CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY, user_id INTEGER, type TEXT, auction_id INTEGER, title TEXT, amount INTEGER, created INTEGER, read INTEGER DEFAULT 0);
+CREATE INDEX IF NOT EXISTS notif_u ON notifications(user_id);
+CREATE TABLE IF NOT EXISTS push_subs(endpoint TEXT PRIMARY KEY, user_id INTEGER, p256dh TEXT, auth TEXT, created INTEGER);
+CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
 `);
+const addCol = (t, c, d) => { if (!db.prepare(`PRAGMA table_info(${t})`).all().some(x => x.name === c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${d}`); };
+addCol('auctions', 'city', 'TEXT'); addCol('auctions', 'leader_pickup', 'INTEGER DEFAULT 0'); addCol('bids', 'pickup', 'INTEGER DEFAULT 0'); addCol('orders', 'pickup', 'INTEGER DEFAULT 0');
+addCol('users', 'notif_outbid', 'INTEGER DEFAULT 1'); addCol('users', 'notif_won', 'INTEGER DEFAULT 1'); addCol('users', 'notif_sold', 'INTEGER DEFAULT 1'); addCol('users', 'lang', "TEXT DEFAULT 'en'"); addCol('users', 'fb_handle', 'TEXT');
 
 const now = () => Date.now();
 const sha = s => crypto.createHash('sha256').update(String(s)).digest('hex');
 const mask = n => n[0] + '***' + n.slice(-1);
 const isAdmin = u => ADMINS.includes(u.fb_id);
-const pub = u => ({ id: u.id, name: u.name, phone_verified: !!u.phone_verified, tos: !!u.tos_at, blocked: !!u.blocked, admin: isAdmin(u) });
+const TOS_VERSION = '1.1'; // 1.1 added: phone and Facebook contact are shared with the other party after an auction
+const pub = u => ({ id: u.id, name: u.name, phone_verified: !!u.phone_verified, fb: !!u.fb_handle, tos: u.tos_version === TOS_VERSION, blocked: !!u.blocked, admin: isAdmin(u), phone: u.phone || null, fbh: u.fb_handle || null });
 const fail = (res, code, error) => res.status(code).json({ error });
 
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '12mb' }));
+app.use((req, res, next) => {
+  if (req.secure) res.set('Strict-Transport-Security', 'max-age=31536000');
+  res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'strict-origin-when-cross-origin', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()' });
+  next();
+});
 
 // Small in-memory rate limiter (use Redis if you run several servers).
 const hits = new Map();
 const limit = (max, ms) => (req, res, next) => {
+  if (env.NO_RATE_LIMIT === '1') return next(); // tests only
   const k = req.ip + req.path, t = now(), a = (hits.get(k) || []).filter(x => t - x < ms);
   if (a.length >= max) return fail(res, 429, 'Too many requests. Try again later.');
   a.push(t); hits.set(k, a); next();
@@ -47,26 +61,66 @@ const auth = (req, res, next) => {
   try {
     const p = jwt.verify((req.headers.authorization || '').replace('Bearer ', ''), SECRET);
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(p.sub);
-    if (!u) throw 0;
+    if (!u || u.fb_id.startsWith('deleted:')) throw 0; // deleted accounts can no longer use their old token
     req.user = u; next();
   } catch { fail(res, 401, 'Please sign in.'); }
 };
 const ready = (msg = 'Blocked accounts cannot do this.') => (req, res, next) => {
   const u = req.user;
   if (u.blocked) return fail(res, 403, msg);
-  if (!u.phone_verified || !u.tos_at) return fail(res, 403, 'Finish sign-up first.');
+  if (!u.phone_verified || !u.fb_handle || u.tos_version !== TOS_VERSION) return fail(res, 403, 'Finish sign-up first.');
   next();
 };
 const adminOnly = (req, res, next) => isAdmin(req.user) ? next() : fail(res, 404, 'Not found'); // hidden from everyone else
 
+// ---------- Notifications (in-app + Web Push) ----------
+function initVapid() {
+  let pub = env.VAPID_PUBLIC, priv = env.VAPID_PRIVATE;
+  if (!pub) { // generated once and kept in the database so subscriptions survive restarts
+    const row = db.prepare("SELECT v FROM kv WHERE k='vapid'").get();
+    if (row) ({ pub, priv } = JSON.parse(row.v));
+    else { const k = webpush.generateVAPIDKeys(); pub = k.publicKey; priv = k.privateKey; db.prepare("INSERT INTO kv VALUES('vapid',?)").run(JSON.stringify({ pub, priv })); }
+  }
+  webpush.setVapidDetails(env.VAPID_SUBJECT || 'mailto:admin@example.com', pub, priv);
+  return pub;
+}
+const VAPID_PUB = initVapid();
+let pushSender = (sub, payload) => webpush.sendNotification(sub, JSON.stringify(payload), { TTL: 3600 });
+async function pushUser(uid, payload) {
+  for (const s of db.prepare('SELECT * FROM push_subs WHERE user_id=?').all(uid)) {
+    try { await pushSender({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload); }
+    catch (e) { if (e.statusCode === 404 || e.statusCode === 410) db.prepare('DELETE FROM push_subs WHERE endpoint=?').run(s.endpoint); else console.error('push failed', e.statusCode || e.message); }
+  }
+}
+const shekel = n => '₪' + Number(n).toLocaleString('en-US');
+const NT = {
+  en: { title: { outbid: 'You were outbid', won: 'You won!', sold: 'Your item sold!' }, body: { outbid: (t, a) => `You were outbid on "${t}". New highest bid: ${shekel(a)}.`, won: (t, a) => `You won "${t}" for ${shekel(a)}. Pay within 24 hours.`, sold: (t, a) => `"${t}" sold for ${shekel(a)}. The buyer has 24 hours to pay.` } },
+  he: { title: { outbid: 'הוצעה הצעה גבוהה משלך', won: 'זכית במכרז!', sold: 'הפריט שלך נמכר!' }, body: { outbid: (t, a) => `הוצעה הצעה גבוהה יותר על "${t}". ההצעה הגבוהה ביותר: ${shekel(a)}.`, won: (t, a) => `זכיתם ב"${t}" ב-${shekel(a)}. התשלום נדרש בתוך 24 שעות.`, sold: (t, a) => `"${t}" נמכר ב-${shekel(a)}. לקונה יש 24 שעות לשלם.` } }
+};
+// Saves the notification (if the user has this type switched on). Call deliver() after the transaction commits.
+function addNotif(uid, type, aid, title, amount) {
+  const u = db.prepare('SELECT notif_outbid, notif_won, notif_sold, lang FROM users WHERE id=?').get(uid);
+  if (!u) return null;
+  const on = type === 'outbid' ? u.notif_outbid : type === 'won' ? u.notif_won : u.notif_sold;
+  if (!on) return null;
+  const r = db.prepare('INSERT INTO notifications(user_id,type,auction_id,title,amount,created,read) VALUES(?,?,?,?,?,?,0)').run(uid, type, aid, title, amount, now());
+  return { id: r.lastInsertRowid, user_id: uid, type, title, amount, lang: u.lang };
+}
+function deliver(n) {
+  if (!n) return;
+  const L = NT[n.lang] || NT.en;
+  pushUser(n.user_id, { title: L.title[n.type], body: L.body[n.type](n.title, n.amount), tag: n.type + n.id, url: '/' }).catch(() => {});
+}
+
 // ---------- Auth ----------
-app.get('/api/config', (q, r) => r.json({ fbAppId: env.FB_APP_ID || null, dev: DEV }));
+app.get('/api/config', (q, r) => r.json({ fbAppId: env.FB_APP_ID || null, dev: DEV, vapid: VAPID_PUB }));
 const token = u => jwt.sign({ sub: u.id }, SECRET, { expiresIn: '30d' });
 
 async function fbProfile(accessToken) {
+  if (!env.FB_APP_ID || !env.FB_APP_SECRET) throw new Error('Facebook login is not configured'); // fail closed: never accept tokens we cannot tie to our own app
   const j = await (await fetch('https://graph.facebook.com/me?fields=id,name&access_token=' + encodeURIComponent(accessToken))).json();
   if (!j.id) throw new Error('bad token');
-  if (env.FB_APP_ID && env.FB_APP_SECRET) { // make sure the token was issued to OUR app
+  { // make sure the token was issued to OUR app
     const d = await (await fetch(`https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(accessToken)}&access_token=${env.FB_APP_ID}|${env.FB_APP_SECRET}`)).json();
     if (!d.data || !d.data.is_valid || d.data.app_id !== env.FB_APP_ID) throw new Error('token not for this app');
   }
@@ -134,11 +188,33 @@ app.post('/api/auth/phone/verify', auth, limit(30, 3600000), (req, res) => {
   db.prepare('DELETE FROM otps WHERE user_id=?').run(req.user.id);
   res.json({ ok: true });
 });
-app.post('/api/auth/tos', auth, (req, res) => {
+// Facebook Login only gives us an app-scoped ID that cannot be turned into a profile link, so people type their own profile link or username.
+function parseFb(s) {
+  s = String(s || '').trim().replace(/^@/, '');
+  if (!s) return null;
+  let h = s;
+  if (/^(https?:\/\/)?([\w-]+\.)*(facebook\.com|fb\.com|fb\.me|m\.me)\//i.test(s)) {
+    try {
+      const u = new URL(/^https?:/i.test(s) ? s : 'https://' + s), segs = u.pathname.split('/').filter(Boolean);
+      if (segs[0] === 'profile.php') h = u.searchParams.get('id') || '';
+      else if (segs[0] === 'people') h = segs.filter(x => /^\d{5,}$/.test(x)).pop() || '';
+      else h = segs[0] || '';
+    } catch { return null; }
+  }
+  return /^(\d{5,20}|[A-Za-z0-9.]{5,50})$/.test(h) && !/^(profile\.php|groups|pages|share|watch|marketplace|events|login|home\.php|story\.php)$/i.test(h) ? h : null;
+}
+app.post('/api/auth/fb-contact', auth, (req, res) => {
   if (!req.user.phone_verified) return fail(res, 403, 'Finish sign-up first.');
+  const h = parseFb((req.body || {}).link);
+  if (!h) return fail(res, 400, 'Enter a valid Facebook profile link or username.');
+  db.prepare('UPDATE users SET fb_handle=? WHERE id=?').run(h, req.user.id);
+  res.json({ ok: true, fb: h });
+});
+app.post('/api/auth/tos', auth, (req, res) => {
+  if (!req.user.phone_verified || !req.user.fb_handle) return fail(res, 403, 'Finish sign-up first.');
   const t = now();
-  db.prepare('UPDATE users SET tos_at=?, tos_version=? WHERE id=?').run(t, '1.0', req.user.id);
-  db.prepare('INSERT INTO tos_acceptances(user_id,version,at,ip,ua) VALUES(?,?,?,?,?)').run(req.user.id, '1.0', t, req.ip, String(req.headers['user-agent'] || '').slice(0, 200));
+  db.prepare('UPDATE users SET tos_at=?, tos_version=? WHERE id=?').run(t, TOS_VERSION, req.user.id);
+  db.prepare('INSERT INTO tos_acceptances(user_id,version,at,ip,ua) VALUES(?,?,?,?,?)').run(req.user.id, TOS_VERSION, t, req.ip, String(req.headers['user-agent'] || '').slice(0, 200));
   res.json({ ok: true });
 });
 
@@ -146,7 +222,7 @@ app.post('/api/auth/tos', auth, (req, res) => {
 function ser(a, uid) {
   const bids = db.prepare('SELECT b.amount, b.created, u.name FROM bids b JOIN users u ON u.id=b.bidder_id WHERE b.auction_id=? ORDER BY b.id DESC LIMIT 200').all(a.id)
     .reverse().map(b => ({ u: mask(b.name), a: b.amount, t: b.created }));
-  return { id: a.id, type: a.type, title: a.title, set: a.set_name, cond: a.cond, info: a.info, ship: a.ship_fee, by: a.ship_by, start: a.start_price, inc: a.inc, ref: a.ref_price, end: a.end_at, bids, imgs: Array.from({ length: a.img_count }, (_, i) => `/api/img/${a.id}/${i}`), mine: a.seller_id === uid };
+  return { id: a.id, type: a.type, title: a.title, set: a.set_name, cond: a.cond, info: a.info, ship: a.ship_by === 'seller' ? 0 : a.ship_fee, by: a.ship_by === 'pickup' ? 'pickup' : 'both', city: a.city || '', start: a.start_price, inc: a.inc, end: a.end_at, bids, imgs: Array.from({ length: a.img_count }, (_, i) => `/api/img/${a.id}/${i}`), mine: a.seller_id === uid, lead: a.leader_id === uid };
 }
 app.get('/api/state', auth, (req, res) => {
   const u = req.user;
@@ -156,9 +232,13 @@ app.get('/api/state', auth, (req, res) => {
     past: db.prepare("SELECT type,title,set_name,current_price,bid_count,end_at FROM auctions WHERE status='closed' ORDER BY end_at DESC LIMIT 100").all()
       .map(a => ({ type: a.type, title: a.title, set: a.set_name, price: a.bid_count ? a.current_price : 0, bids: a.bid_count, date: new Date(a.end_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) })),
     myBids: db.prepare('SELECT a.title, b.amount amt, b.created t FROM bids b JOIN auctions a ON a.id=b.auction_id WHERE b.bidder_id=? ORDER BY b.id DESC LIMIT 100').all(u.id).reverse(),
-    orders: db.prepare('SELECT o.*, a.title, bu.name bname, su.name sname FROM orders o JOIN auctions a ON a.id=o.auction_id JOIN users bu ON bu.id=o.buyer_id JOIN users su ON su.id=o.seller_id WHERE o.buyer_id=? OR o.seller_id=? ORDER BY o.id DESC').all(u.id, u.id)
-      .map(o => ({ id: o.id, title: o.title, buyer: o.bname, seller: o.sname, price: o.price, ship: o.ship_fee, by: o.ship_by, status: o.status, due: o.due_at, role: o.buyer_id === u.id ? 'buyer' : 'seller' })).reverse()
+    orders: db.prepare('SELECT o.*, a.title, a.city, bu.name bname, su.name sname, bu.phone bphone, bu.fb_handle bfb, su.phone sphone, su.fb_handle sfb FROM orders o JOIN auctions a ON a.id=o.auction_id JOIN users bu ON bu.id=o.buyer_id JOIN users su ON su.id=o.seller_id WHERE o.buyer_id=? OR o.seller_id=? ORDER BY o.id DESC').all(u.id, u.id)
+      .map(o => ({ id: o.id, aid: o.auction_id, title: o.title, buyer: o.bname, seller: o.sname, price: o.price, ship: o.ship_fee, by: o.ship_by === 'pickup' ? 'pickup' : 'both', pickup: !!o.pickup, other: o.buyer_id === u.id ? { name: o.sname, phone: o.sphone, fb: o.sfb } : { name: o.bname, phone: o.bphone, fb: o.bfb }, city: o.city || '', status: o.status, due: o.due_at, role: o.buyer_id === u.id ? 'buyer' : 'seller' })).reverse()
   };
+  out.myListings = db.prepare('SELECT a.id,a.type,a.title,a.status,a.current_price,a.bid_count,a.end_at,a.img_count,o.status ostatus FROM auctions a LEFT JOIN orders o ON o.auction_id=a.id WHERE a.seller_id=? ORDER BY a.id DESC LIMIT 100').all(u.id)
+    .map(a => ({ id: a.id, type: a.type, title: a.title, status: a.status === 'live' ? 'live' : a.status === 'cancelled' ? 'cancelled' : a.bid_count ? 'sold' : 'unsold', price: a.status === 'live' || a.bid_count ? a.current_price : 0, bids: a.bid_count, end: a.end_at, img: a.img_count ? `/api/img/${a.id}/0` : null, order: a.ostatus || null }));
+  out.notifs = db.prepare('SELECT id,type,auction_id aid,title,amount,created t,read FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 50').all(u.id).map(n => ({ ...n, read: !!n.read }));
+  out.prefs = { outbid: !!u.notif_outbid, won: !!u.notif_won, sold: !!u.notif_sold, lang: u.lang || 'en' };
   if (isAdmin(u)) {
     out.cases = db.prepare(`SELECT c.*, a.title, bu.name bname, su.name sname, ru.name rname, o.price, o.buyer_id FROM cases c JOIN orders o ON o.id=c.order_id JOIN auctions a ON a.id=o.auction_id
       JOIN users bu ON bu.id=o.buyer_id JOIN users su ON su.id=o.seller_id JOIN users ru ON ru.id=c.reported_id ORDER BY c.id DESC`).all()
@@ -179,7 +259,11 @@ app.post('/api/auctions', auth, ready('Blocked accounts cannot list.'), (req, re
   const title = String(b.title || '').trim().slice(0, 120), st = Math.floor(+b.start), sh = Math.floor(+b.ship), hrs = +b.hours;
   if (title.length < 3) return fail(res, 400, 'Add a title.');
   if (!(st >= 1 && st <= 1e6)) return fail(res, 400, 'Set a starting price.');
-  if (b.ship === '' || b.ship == null || !(sh >= 0 && sh <= 1e4)) return fail(res, 400, 'Set the shipping cost (0 if free).');
+  const mode = ['pickup', 'both'].includes(b.by) ? b.by : null; // pickup only, or pickup + shipping at the seller's price
+  if (!mode) return fail(res, 400, 'Choose how the buyer can get the item.');
+  if (mode === 'both' && (b.ship === '' || b.ship == null || !(sh >= 0 && sh <= 1e4))) return fail(res, 400, 'Set the shipping cost (0 if free).');
+  const city = String(b.city || '').trim().slice(0, 60);
+  if (city.length < 2) return fail(res, 400, 'Enter the pickup city.');
   if (!['card', 'booster'].includes(b.type)) return fail(res, 400, 'Pick an item type.');
   if (!(hrs >= 0.5 && hrs <= 168)) return fail(res, 400, 'Pick a duration.');
   const imgs = Array.isArray(b.imgs) ? b.imgs.slice(0, 10) : [];
@@ -197,9 +281,9 @@ app.post('/api/auctions', auth, ready('Blocked accounts cannot list.'), (req, re
   if (db.prepare("SELECT COUNT(*) c FROM auctions WHERE seller_id=? AND status='live'").get(u.id).c >= 5) return fail(res, 400, 'You can have at most 5 live listings.');
   const id = db.transaction(() => {
     const t = now();
-    const r = db.prepare('INSERT INTO auctions(seller_id,type,title,set_name,cond,info,start_price,inc,ship_fee,ship_by,ref_price,end_at,current_price,img_count,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    const r = db.prepare('INSERT INTO auctions(seller_id,type,title,set_name,cond,info,start_price,inc,ship_fee,ship_by,ref_price,end_at,current_price,img_count,created,city) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
       .run(u.id, b.type, title, String(b.set || '').trim().slice(0, 100) || 'Unknown set', String(b.cond || '').trim().slice(0, 60) || 'Not stated', String(b.info || '').trim().slice(0, 2000),
-        st, st >= 500 ? 25 : 10, sh, b.by === 'seller' ? 'seller' : 'buyer', Math.max(0, Math.floor(+b.ref || 0)), t + hrs * 3600000, st, parsed.length, t);
+        st, st >= 500 ? 25 : 10, mode === 'pickup' ? 0 : sh, mode, 0, t + hrs * 3600000, st, parsed.length, t, city);
     parsed.forEach((p, i) => db.prepare('INSERT INTO images VALUES(?,?,?,?)').run(r.lastInsertRowid, i, p.mime, p.buf));
     return r.lastInsertRowid;
   })();
@@ -207,24 +291,27 @@ app.post('/api/auctions', auth, ready('Blocked accounts cannot list.'), (req, re
   res.json({ id });
 });
 
-const placeBid = db.transaction((uid, aid, amount) => {
+const placeBid = db.transaction((uid, aid, amount, pickup) => {
   const a = db.prepare('SELECT * FROM auctions WHERE id=?').get(aid), t = now();
   if (!a || a.status !== 'live' || a.end_at <= t) return { code: 409, err: 'Auction closed.' };
   if (a.seller_id === uid) return { code: 403, err: 'You cannot bid on your own listing.' };
   const min = a.bid_count ? a.current_price + a.inc : a.start_price;
   if (!(amount >= min)) return { code: 409, err: `Bid must be at least ₪${min.toLocaleString('en-US')}.` };
-  db.prepare('INSERT INTO bids(auction_id,bidder_id,amount,created) VALUES(?,?,?,?)').run(aid, uid, amount, t);
+  const pk = a.ship_by === 'pickup' || pickup ? 1 : 0; // pickup-only items are always picked up; otherwise the buyer chooses
+  db.prepare('INSERT INTO bids(auction_id,bidder_id,amount,created,pickup) VALUES(?,?,?,?,?)').run(aid, uid, amount, t, pk);
   const ext = a.end_at - t < 120000; // anti-sniping: late bid adds 2 minutes
-  db.prepare('UPDATE auctions SET current_price=?, leader_id=?, bid_count=bid_count+1, end_at=? WHERE id=?').run(amount, uid, ext ? a.end_at + 120000 : a.end_at, aid);
-  return { ok: true, ext };
+  db.prepare('UPDATE auctions SET current_price=?, leader_id=?, leader_pickup=?, bid_count=bid_count+1, end_at=? WHERE id=?').run(amount, uid, pk, ext ? a.end_at + 120000 : a.end_at, aid);
+  const notif = a.leader_id && a.leader_id !== uid ? addNotif(a.leader_id, 'outbid', aid, a.title, amount) : null; // tell the person who was just outbid
+  return { ok: true, ext, notif };
 });
 app.post('/api/auctions/:id/bids', auth, ready('Blocked accounts cannot bid.'), limit(60, 60000), (req, res) => {
   const amount = Math.floor(+req.body.amount);
   if (!(amount >= 1 && amount <= 1e7)) return fail(res, 400, 'Enter a valid bid.');
-  const r = placeBid(req.user.id, +req.params.id, amount);
+  const r = placeBid(req.user.id, +req.params.id, amount, !!req.body.pickup);
   if (!r.ok) return fail(res, r.code, r.err);
   broadcast();
-  res.json(r);
+  deliver(r.notif);
+  res.json({ ok: true, ext: r.ext });
 });
 
 // ---------- Orders and non-payment cases ----------
@@ -252,21 +339,38 @@ app.post('/api/orders/:id/:op', auth, ready(), (req, res) => {
 
 // Closes ended auctions, creates orders (24h payment window) and opens a case for unpaid orders.
 const sweepTx = db.transaction(() => {
-  const t = now(); let changed = false;
+  const t = now(); let changed = false; const notifs = [];
   for (const a of db.prepare("SELECT * FROM auctions WHERE status='live' AND end_at<=?").all(t)) {
     changed = true;
     db.prepare("UPDATE auctions SET status='closed' WHERE id=?").run(a.id);
-    if (a.bid_count) db.prepare('INSERT INTO orders(auction_id,buyer_id,seller_id,price,ship_fee,ship_by,status,due_at,created) VALUES(?,?,?,?,?,?,?,?,?)')
-      .run(a.id, a.leader_id, a.seller_id, a.current_price, a.ship_fee, a.ship_by, 'awaiting_payment', a.end_at + 864e5, t);
+    if (a.bid_count) db.prepare('INSERT INTO orders(auction_id,buyer_id,seller_id,price,ship_fee,ship_by,status,due_at,created,pickup) VALUES(?,?,?,?,?,?,?,?,?,?)')
+      .run(a.id, a.leader_id, a.seller_id, a.current_price, a.ship_fee, a.ship_by, 'awaiting_payment', a.end_at + 864e5, t, a.leader_pickup || 0);
+    if (a.bid_count) { notifs.push(addNotif(a.leader_id, 'won', a.id, a.title, a.current_price)); notifs.push(addNotif(a.seller_id, 'sold', a.id, a.title, a.current_price)); }
   }
   for (const o of db.prepare("SELECT * FROM orders WHERE status='awaiting_payment' AND due_at<=?").all(t)) {
     changed = true;
     db.prepare("UPDATE orders SET status='overdue' WHERE id=?").run(o.id);
     db.prepare('INSERT INTO cases(order_id,reported_id,opened_by,why,created) VALUES(?,?,?,?,?)').run(o.id, o.buyer_id, null, 'Winner did not pay within 24 hours', t);
   }
-  return changed;
+  return { changed, notifs };
 });
-function sweep() { if (sweepTx()) broadcast(); }
+function sweep() { const r = sweepTx(); if (r.changed) { broadcast(); r.notifs.forEach(deliver); } }
+
+// ---------- Notification settings and device (push) subscriptions ----------
+app.post('/api/prefs', auth, (req, res) => {
+  const b = req.body || {}, u = req.user;
+  db.prepare('UPDATE users SET notif_outbid=?, notif_won=?, notif_sold=?, lang=? WHERE id=?').run(
+    b.outbid === undefined ? u.notif_outbid : (b.outbid ? 1 : 0), b.won === undefined ? u.notif_won : (b.won ? 1 : 0), b.sold === undefined ? u.notif_sold : (b.sold ? 1 : 0), ['en', 'he'].includes(b.lang) ? b.lang : u.lang, u.id);
+  res.json({ ok: true });
+});
+app.post('/api/notifications/read', auth, (req, res) => { db.prepare('UPDATE notifications SET read=1 WHERE user_id=?').run(req.user.id); res.json({ ok: true }); });
+app.post('/api/push/subscribe', auth, limit(30, 3600000), (req, res) => {
+  const b = req.body || {}, k = b.keys || {};
+  if (!/^https:\/\//.test(String(b.endpoint || '')) || !k.p256dh || !k.auth) return fail(res, 400, 'Invalid subscription.');
+  db.prepare('INSERT OR REPLACE INTO push_subs(endpoint,user_id,p256dh,auth,created) VALUES(?,?,?,?,?)').run(b.endpoint, req.user.id, k.p256dh, k.auth, now());
+  res.json({ ok: true });
+});
+app.post('/api/push/unsubscribe', auth, (req, res) => { db.prepare('DELETE FROM push_subs WHERE endpoint=? AND user_id=?').run(String((req.body || {}).endpoint || ''), req.user.id); res.json({ ok: true }); });
 
 // ---------- Admin (only users whose Facebook ID is in ADMIN_FB_IDS) ----------
 app.post('/api/admin/cases/:id', auth, adminOnly, (req, res) => {
@@ -288,6 +392,28 @@ app.post('/api/admin/cases/:id', auth, adminOnly, (req, res) => {
   res.json({ ok: true });
 });
 
+// Account deletion (also what Facebook's "data deletion" requirement points to). Personal data is erased; auction and order rows stay for the other party's records.
+app.post('/api/account/delete', auth, (req, res) => {
+  const u = req.user;
+  if (u.blocked) return fail(res, 403, 'This account cannot be deleted.');
+  if (db.prepare("SELECT 1 FROM auctions WHERE status='live' AND (seller_id=? OR leader_id=?)").get(u.id, u.id)) return fail(res, 409, 'You have live auctions. Wait until they end first.');
+  if (db.prepare("SELECT 1 FROM orders WHERE (buyer_id=? OR seller_id=?) AND status NOT IN ('completed','resolved')").get(u.id, u.id)) return fail(res, 409, 'Finish your open orders first.');
+  db.transaction(() => {
+    db.prepare("UPDATE users SET name='Deleted user', fb_id=?, phone=NULL, phone_verified=0, fb_handle=NULL, tos_at=NULL, tos_version=NULL WHERE id=?").run('deleted:' + u.id, u.id);
+    for (const t of ['push_subs', 'notifications', 'otps']) db.prepare(`DELETE FROM ${t} WHERE user_id=?`).run(u.id);
+    db.prepare('INSERT INTO audit(actor,action,detail,ts) VALUES(?,?,?,?)').run(u.id, 'delete_account', '{}', now());
+  })();
+  res.json({ ok: true });
+});
+
+// Legal pages (templates in /public, with the contact email filled in from CONTACT_EMAIL)
+for (const pg of ['privacy', 'terms', 'data-deletion']) {
+  app.get('/' + pg, (req, res) => {
+    try {
+      res.type('html').send(fs.readFileSync(path.join(__dirname, 'public', pg + '.html'), 'utf8').replace(/\{\{EMAIL\}\}/g, env.CONTACT_EMAIL || 'contact@example.com').replace(/\{\{SITE\}\}/g, env.SITE_NAME || 'Holo Bid'));
+    } catch { res.sendStatus(404); }
+  });
+}
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/api', (req, res) => fail(res, 404, 'Not found'));
 
@@ -297,6 +423,7 @@ function broadcast() { wss.clients.forEach(c => c.readyState === 1 && c.send('re
 
 if (require.main === module) {
   setInterval(() => { try { sweep(); } catch (e) { console.error('sweep failed', e); } }, 1000);
+  process.on('SIGTERM', () => { server.close(() => { try { db.close(); } catch {} process.exit(0); }); });
   server.listen(+env.PORT || 3000, () => console.log('Holo Bid running on port ' + (env.PORT || 3000) + (DEV ? ' (DEV_AUTH on)' : '')));
 }
-module.exports = { app, server, db, sweep };
+module.exports = { app, server, db, sweep, setPushSender: f => { pushSender = f; } };
