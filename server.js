@@ -28,14 +28,15 @@ CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
 `);
 const addCol = (t, c, d) => { if (!db.prepare(`PRAGMA table_info(${t})`).all().some(x => x.name === c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${d}`); };
 addCol('auctions', 'city', 'TEXT'); addCol('auctions', 'leader_pickup', 'INTEGER DEFAULT 0'); addCol('bids', 'pickup', 'INTEGER DEFAULT 0'); addCol('orders', 'pickup', 'INTEGER DEFAULT 0');
-addCol('users', 'notif_outbid', 'INTEGER DEFAULT 1'); addCol('users', 'notif_won', 'INTEGER DEFAULT 1'); addCol('users', 'notif_sold', 'INTEGER DEFAULT 1'); addCol('users', 'lang', "TEXT DEFAULT 'en'"); addCol('users', 'fb_handle', 'TEXT');
+addCol('users', 'email', 'TEXT'); addCol('users', 'notif_outbid', 'INTEGER DEFAULT 1'); addCol('users', 'notif_won', 'INTEGER DEFAULT 1'); addCol('users', 'notif_sold', 'INTEGER DEFAULT 1'); addCol('users', 'lang', "TEXT DEFAULT 'en'"); addCol('users', 'fb_handle', 'TEXT');
 
 const now = () => Date.now();
 const sha = s => crypto.createHash('sha256').update(String(s)).digest('hex');
 const mask = n => n[0] + '***' + n.slice(-1);
-const isAdmin = u => ADMINS.includes(u.fb_id);
+const adminEmails = () => (env.ADMIN_EMAILS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const isAdmin = u => ADMINS.includes(u.fb_id) || (!!u.email && adminEmails().includes(String(u.email).toLowerCase()));
 const TOS_VERSION = '1.1'; // 1.1 added: phone and Facebook contact are shared with the other party after an auction
-const pub = u => ({ id: u.id, name: u.name, phone_verified: !!u.phone_verified, fb: !!u.fb_handle, tos: u.tos_version === TOS_VERSION, blocked: !!u.blocked, admin: isAdmin(u), phone: u.phone || null, fbh: u.fb_handle || null });
+const pub = u => ({ id: u.id, name: u.name, phone_verified: !!u.phone_verified, fb: !!u.fb_handle, tos: u.tos_version === TOS_VERSION, blocked: !!u.blocked, admin: isAdmin(u), phone: u.phone || null, fbh: u.fb_handle && u.fb_handle !== '-' ? u.fb_handle : null });
 const fail = (res, code, error) => res.status(code).json({ error });
 
 const app = express();
@@ -113,20 +114,20 @@ function deliver(n) {
 }
 
 // ---------- Auth ----------
-app.get('/api/config', (q, r) => r.json({ fbAppId: env.FB_APP_ID || null, dev: DEV, vapid: VAPID_PUB }));
+app.get('/api/config', (q, r) => r.json({ googleClientId: env.GOOGLE_CLIENT_ID || null, dev: DEV, vapid: VAPID_PUB }));
 const token = u => jwt.sign({ sub: u.id }, SECRET, { expiresIn: '30d' });
 
-async function fbProfile(accessToken) {
-  if (!env.FB_APP_ID || !env.FB_APP_SECRET) throw new Error('Facebook login is not configured'); // fail closed: never accept tokens we cannot tie to our own app
-  const j = await (await fetch('https://graph.facebook.com/me?fields=id,name&access_token=' + encodeURIComponent(accessToken))).json();
-  if (!j.id) throw new Error('bad token');
-  { // make sure the token was issued to OUR app
-    const d = await (await fetch(`https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(accessToken)}&access_token=${env.FB_APP_ID}|${env.FB_APP_SECRET}`)).json();
-    if (!d.data || !d.data.is_valid || d.data.app_id !== env.FB_APP_ID) throw new Error('token not for this app');
-  }
-  return j;
+async function googleProfile(idToken) {
+  if (!env.GOOGLE_CLIENT_ID) throw new Error('Google sign-in is not configured'); // fail closed: never accept tokens we cannot tie to our own client id
+  const j = await (await fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken))).json(); // Google checks the signature
+  if (!j.sub || j.aud !== env.GOOGLE_CLIENT_ID) throw new Error('token not for this app');
+  if (j.iss !== 'accounts.google.com' && j.iss !== 'https://accounts.google.com') throw new Error('bad issuer');
+  if (!(+j.exp * 1000 > Date.now())) throw new Error('expired');
+  if (String(j.email_verified) !== 'true' || !j.email) throw new Error('email not verified');
+  const email = String(j.email).toLowerCase();
+  return { id: 'g:' + j.sub, name: String(j.name || email.split('@')[0]).trim().slice(0, 40), email };
 }
-app.post('/api/auth/facebook', limit(30, 600000), async (req, res) => {
+app.post('/api/auth/google', limit(30, 600000), async (req, res) => {
   try {
     let p;
     if (req.body.dev) {
@@ -134,14 +135,14 @@ app.post('/api/auth/facebook', limit(30, 600000), async (req, res) => {
       const n = String(req.body.dev).trim().slice(0, 40);
       if (!n) return fail(res, 400, 'Enter a name.');
       p = { id: 'dev:' + n.toLowerCase().replace(/\s+/g, '-'), name: n };
-    } else p = await fbProfile(req.body.accessToken);
+    } else p = await googleProfile(req.body.credential);
     let u = db.prepare('SELECT * FROM users WHERE fb_id=?').get(p.id);
     if (!u) {
-      const i = db.prepare('INSERT INTO users(fb_id,name,created) VALUES(?,?,?)').run(p.id, p.name, now());
+      const i = db.prepare('INSERT INTO users(fb_id,name,email,created) VALUES(?,?,?,?)').run(p.id, p.name, p.email || null, now());
       u = db.prepare('SELECT * FROM users WHERE id=?').get(i.lastInsertRowid);
-    }
+    } else if (p.email && u.email !== p.email) { db.prepare('UPDATE users SET email=? WHERE id=?').run(p.email, u.id); u.email = p.email; }
     res.json({ token: token(u), user: pub(u) });
-  } catch { fail(res, 401, 'Facebook sign-in failed.'); }
+  } catch { fail(res, 401, 'Google sign-in failed.'); }
 });
 
 const normPhone = s => {
@@ -205,6 +206,7 @@ function parseFb(s) {
 }
 app.post('/api/auth/fb-contact', auth, (req, res) => {
   if (!req.user.phone_verified) return fail(res, 403, 'Finish sign-up first.');
+  if ((req.body || {}).skip) { db.prepare("UPDATE users SET fb_handle='-' WHERE id=?").run(req.user.id); return res.json({ ok: true, fb: null }); } // optional: '-' means skipped
   const h = parseFb((req.body || {}).link);
   if (!h) return fail(res, 400, 'Enter a valid Facebook profile link or username.');
   db.prepare('UPDATE users SET fb_handle=? WHERE id=?').run(h, req.user.id);
@@ -232,7 +234,7 @@ app.get('/api/state', auth, (req, res) => {
     past: db.prepare("SELECT type,title,set_name,current_price,bid_count,end_at FROM auctions WHERE status='closed' ORDER BY end_at DESC LIMIT 100").all()
       .map(a => ({ type: a.type, title: a.title, set: a.set_name, price: a.bid_count ? a.current_price : 0, bids: a.bid_count, date: new Date(a.end_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) })),
     myBids: db.prepare('SELECT a.title, b.amount amt, b.created t FROM bids b JOIN auctions a ON a.id=b.auction_id WHERE b.bidder_id=? ORDER BY b.id DESC LIMIT 100').all(u.id).reverse(),
-    orders: db.prepare('SELECT o.*, a.title, a.city, bu.name bname, su.name sname, bu.phone bphone, bu.fb_handle bfb, su.phone sphone, su.fb_handle sfb FROM orders o JOIN auctions a ON a.id=o.auction_id JOIN users bu ON bu.id=o.buyer_id JOIN users su ON su.id=o.seller_id WHERE o.buyer_id=? OR o.seller_id=? ORDER BY o.id DESC').all(u.id, u.id)
+    orders: db.prepare('SELECT o.*, a.title, a.city, bu.name bname, su.name sname, bu.phone bphone, NULLIF(bu.fb_handle,char(45)) bfb, su.phone sphone, NULLIF(su.fb_handle,char(45)) sfb FROM orders o JOIN auctions a ON a.id=o.auction_id JOIN users bu ON bu.id=o.buyer_id JOIN users su ON su.id=o.seller_id WHERE o.buyer_id=? OR o.seller_id=? ORDER BY o.id DESC').all(u.id, u.id)
       .map(o => ({ id: o.id, aid: o.auction_id, title: o.title, buyer: o.bname, seller: o.sname, price: o.price, ship: o.ship_fee, by: o.ship_by === 'pickup' ? 'pickup' : 'both', pickup: !!o.pickup, other: o.buyer_id === u.id ? { name: o.sname, phone: o.sphone, fb: o.sfb } : { name: o.bname, phone: o.bphone, fb: o.bfb }, city: o.city || '', status: o.status, due: o.due_at, role: o.buyer_id === u.id ? 'buyer' : 'seller' })).reverse()
   };
   out.myListings = db.prepare('SELECT a.id,a.type,a.title,a.status,a.current_price,a.bid_count,a.end_at,a.img_count,o.status ostatus FROM auctions a LEFT JOIN orders o ON o.auction_id=a.id WHERE a.seller_id=? ORDER BY a.id DESC LIMIT 100').all(u.id)
@@ -372,7 +374,7 @@ app.post('/api/push/subscribe', auth, limit(30, 3600000), (req, res) => {
 });
 app.post('/api/push/unsubscribe', auth, (req, res) => { db.prepare('DELETE FROM push_subs WHERE endpoint=? AND user_id=?').run(String((req.body || {}).endpoint || ''), req.user.id); res.json({ ok: true }); });
 
-// ---------- Admin (only users whose Facebook ID is in ADMIN_FB_IDS) ----------
+// ---------- Admin (only users whose email is in ADMIN_EMAILS) ----------
 app.post('/api/admin/cases/:id', auth, adminOnly, (req, res) => {
   const c = db.prepare('SELECT * FROM cases WHERE id=?').get(+req.params.id), note = String(req.body.note || '').trim(), act = req.body.action;
   if (!c) return fail(res, 404, 'Not found');
@@ -399,7 +401,7 @@ app.post('/api/account/delete', auth, (req, res) => {
   if (db.prepare("SELECT 1 FROM auctions WHERE status='live' AND (seller_id=? OR leader_id=?)").get(u.id, u.id)) return fail(res, 409, 'You have live auctions. Wait until they end first.');
   if (db.prepare("SELECT 1 FROM orders WHERE (buyer_id=? OR seller_id=?) AND status NOT IN ('completed','resolved')").get(u.id, u.id)) return fail(res, 409, 'Finish your open orders first.');
   db.transaction(() => {
-    db.prepare("UPDATE users SET name='Deleted user', fb_id=?, phone=NULL, phone_verified=0, fb_handle=NULL, tos_at=NULL, tos_version=NULL WHERE id=?").run('deleted:' + u.id, u.id);
+    db.prepare("UPDATE users SET name='Deleted user', fb_id=?, phone=NULL, phone_verified=0, fb_handle=NULL, email=NULL, tos_at=NULL, tos_version=NULL WHERE id=?").run('deleted:' + u.id, u.id);
     for (const t of ['push_subs', 'notifications', 'otps']) db.prepare(`DELETE FROM ${t} WHERE user_id=?`).run(u.id);
     db.prepare('INSERT INTO audit(actor,action,detail,ts) VALUES(?,?,?,?)').run(u.id, 'delete_account', '{}', now());
   })();

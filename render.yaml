@@ -18,11 +18,9 @@ services:
         value: "+972"
       - key: CONTACT_EMAIL     # shown on the privacy / terms pages
         sync: false
-      - key: ADMIN_FB_IDS
+      - key: ADMIN_EMAILS
         sync: false
-      - key: FB_APP_ID
-        sync: false
-      - key: FB_APP_SECRET
+      - key: GOOGLE_CLIENT_ID
         sync: false
       - key: TWILIO_SID
         sync: false

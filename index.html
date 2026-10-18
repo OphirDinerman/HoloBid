@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<title>Holo Bid: Pokemon card auctions</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;800&family=Inter+Tight:wght@400;500;600&family=Heebo:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#eef1f6;--surface:#fff;--ink:#14182b;--mute:#5d6580;--line:#d9deea;--blue:#2d5bff;--blue-ink:#fff;--gold:#ffcb05;--red:#d42f3d;--green:#12805c;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e1220;--surface:#181e33;--ink:#eef1fb;--mute:#9aa3c2;--line:#2a3252;--blue:#6d8dff;--blue-ink:#0e1220;--red:#ff6b77;--green:#47d1a0;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0e1220;--surface:#181e33;--ink:#eef1fb;--mute:#9aa3c2;--line:#2a3252;--blue:#6d8dff;--blue-ink:#0e1220;--red:#ff6b77;--green:#47d1a0;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Inter Tight",system-ui,sans-serif}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--surface);z-index:10}
+h1,h2,h3{font-family:"Bricolage Grotesque",system-ui,sans-serif;margin:0;line-height:1.1}
+button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:.6rem 1rem;background:var(--blue);color:var(--blue-ink);font-weight:600}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button.danger{background:var(--red);color:#fff}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+input,select,textarea{font:inherit;width:100%;padding:.65rem .8rem;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+input[type=radio],input[type=checkbox]{width:auto}
+label{display:block;font-weight:500}
+label input,label select,label textarea{margin-top:.25rem;font-weight:400}
+fieldset{border:1px solid var(--line);border-radius:10px;display:grid;gap:.4rem}
+[dir=rtl] body,[dir=rtl] h1,[dir=rtl] h2,[dir=rtl] h3,[dir=rtl] .price,[dir=rtl] .logo,[dir=rtl] .art b{font-family:"Heebo",system-ui,sans-serif}
+#ph,#otp{direction:ltr;text-align:start}
+header{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:.5rem;padding:.6rem 1rem;flex-wrap:wrap}
+.logo{font:800 1.4rem "Bricolage Grotesque",sans-serif;margin-inline-end:auto;letter-spacing:-.02em}
+.logo i{display:inline-block;width:.8em;height:.8em;border-radius:50%;background:linear-gradient(var(--red) 46%,var(--ink) 46% 54%,#fff 54%);border:2px solid var(--ink);margin-inline-end:.3rem;vertical-align:-.05em}
+nav{display:flex;gap:.3rem;align-items:center;position:relative;flex-wrap:wrap}
+nav button{background:transparent;color:var(--ink);padding:.45rem .8rem}
+nav button.on{background:var(--ink);color:var(--bg)}
+.menu{position:absolute;top:110%;inset-inline-end:0;background:var(--surface);border:1px solid var(--line);border-radius:12px;min-width:210px;padding:.3rem;box-shadow:0 12px 30px rgba(0,0,0,.18);z-index:30}
+.menu button{display:block;width:100%;text-align:start;background:transparent;color:var(--ink)}
+.menu button:hover{background:var(--bg)}
+main{max-width:1100px;margin:0 auto;padding:1.2rem 1rem 4rem}
+.tabs{display:flex;gap:.5rem;margin:.8rem 0 1.2rem}
+.tabs button{background:var(--surface);color:var(--ink);border:1px solid var(--line)}
+.tabs button.on{background:var(--gold);color:#14182b;border-color:var(--gold)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(250px,100%),1fr));gap:1rem}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;cursor:pointer}
+.art{aspect-ratio:5/4;display:grid;place-items:center;color:#fff;position:relative;background:linear-gradient(135deg,hsl(var(--h) 80% 45%),hsl(calc(var(--h) + 60) 85% 62%))}
+.art b{font:800 3rem "Bricolage Grotesque",sans-serif;opacity:.9}
+.art small{position:absolute;inset-inline-start:.7rem;bottom:.5rem;opacity:.9;font-weight:600}
+.art .t{position:absolute;inset-inline-end:.6rem;top:.6rem;background:rgba(0,0,0,.6);padding:.15rem .55rem;border-radius:99px;font-size:.85rem;font-variant-numeric:tabular-nums}
+.body{padding:.8rem 1rem 1rem;display:flex;flex-direction:column;gap:.35rem;flex:1}
+.body h3{font-size:1.1rem}
+.mute{color:var(--mute);font-size:.9rem}
+.price{font:800 1.5rem "Bricolage Grotesque",sans-serif}
+.ship{display:inline-block;border:1px solid var(--line);border-radius:99px;padding:.1rem .6rem;font-size:.85rem}
+.row{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:1.2rem;margin-bottom:1rem}
+.center{max-width:480px;margin:6vh auto}
+.modal{position:fixed;inset:0;background:rgba(10,14,30,.6);display:grid;place-items:center;padding:1rem;z-index:50;overflow:auto}
+.sheet{background:var(--surface);border-radius:18px;width:min(560px,100%);padding:1.3rem;max-height:92vh;overflow:auto}
+.note{background:color-mix(in srgb,var(--gold) 25%,transparent);border-inline-start:4px solid var(--gold);padding:.6rem .8rem;border-radius:8px;font-size:.92rem}
+table{width:100%;border-collapse:collapse}
+td,th{text-align:start;padding:.5rem .4rem;border-bottom:1px solid var(--line);font-size:.95rem}
+.scroll{overflow-x:auto}
+.tag{padding:.1rem .55rem;border-radius:99px;font-size:.8rem;font-weight:600;background:var(--bg);border:1px solid var(--line)}
+.tag.bad{color:var(--red)} .tag.ok{color:var(--green)}
+ul.terms{padding-left:1.1rem} ul.terms li{margin:.4rem 0}
+.lightbox{position:fixed;inset:0;background:rgba(5,8,20,.95);display:grid;place-items:center;z-index:70;cursor:zoom-out;padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px)}
+.lightbox img{max-width:100vw;max-height:100vh;object-fit:contain}
+.lightbox .lx{position:fixed;top:calc(.6rem + env(safe-area-inset-top,0px));inset-inline-end:1rem;color:#fff;font-size:2.2rem;line-height:1}
+.toast{position:fixed;left:50%;bottom:calc(1rem + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:.7rem 1.1rem;border-radius:12px;z-index:60}
+.badge{position:absolute;top:-5px;inset-inline-end:-5px;background:var(--red);color:#fff;border-radius:99px;font-size:.72rem;font-weight:700;min-width:1.25rem;height:1.25rem;display:grid;place-items:center;padding:0 .3rem}
+a.btn{display:inline-block;padding:.45rem .8rem;border-radius:10px;border:1px solid var(--line);color:var(--ink);text-decoration:none;font-weight:600;background:var(--surface)}
+.searchbar{display:flex;gap:.5rem;margin:.6rem 0}.searchbar input{flex:1}
+.avatar{width:64px;height:64px;border-radius:50%;background:var(--blue);color:var(--blue-ink);display:grid;place-items:center;font:800 1.8rem "Bricolage Grotesque",sans-serif;flex:none}
+button[hidden]{display:none}
+button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+@media (max-width:640px){
+ header{padding:.5rem .75rem;gap:.35rem}
+ .logo{font-size:1.2rem}
+ nav{gap:.2rem;width:100%}
+ nav button{padding:.4rem .6rem;font-size:.92rem}
+ main{padding:1rem .75rem 5rem}
+ h1{font-size:1.6rem}
+ .menu{position:fixed;inset-inline:0;top:auto;bottom:0;min-width:0;border-radius:18px 18px 0 0;padding:.5rem .5rem calc(.5rem + env(safe-area-inset-bottom,0px));box-shadow:0 -12px 30px rgba(0,0,0,.3)}
+ .menu button{padding:.9rem 1rem;font-size:1.05rem}
+ .modal{align-items:end;padding:0}
+ .sheet{width:100%;border-radius:18px 18px 0 0;max-height:94vh;padding-bottom:calc(1.3rem + env(safe-area-inset-bottom,0px))}
+ .center{margin:3vh auto}
+}
+@media (prefers-reduced-motion:no-preference){.card{transition:transform .15s}.card:hover{transform:translateY(-3px)}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt=n=>"₪"+Number(n).toLocaleString();
+const mask=n=>n[0]+"***"+n.slice(-1);
+const MIN=60000;
+let S={lang:(()=>{try{return localStorage.getItem("hb-lang")||"en"}catch(e){return"en"}})(),user:null,auctions:[],past:[],orders:[],cases:[],blocked:[],myBids:[]};
+let OFF=0,CFG={},TOKEN=(()=>{try{return localStorage.getItem("hb-token")}catch(e){return null}})();
+const now=()=>Date.now()+OFF;
+const save=()=>{try{localStorage.setItem("hb-lang",S.lang)}catch(e){}};
+const step=()=>!S.user?0:!S.user.phone_verified?1:!S.user.fb?2:!S.user.tos?3:4;
+async function api(p,m,b){const r=await fetch("/api"+p,{method:m||"GET",headers:{"Content-Type":"application/json",...(TOKEN?{Authorization:"Bearer "+TOKEN}:{})},body:b?JSON.stringify(b):undefined});let j={};try{j=await r.json()}catch(e){}if(!r.ok){const er=new Error(j.error||"Something went wrong. Try again.");er.status=r.status;throw er}return j}
+async function load(){try{const d=await api("/state");OFF=d.now-Date.now();const prevMax=nSeen;nSeen=Math.max(0,...(d.notifs||[]).map(n=>n.id));(d.notifs||[]).filter(n=>prevMax!==null&&n.id>prevMax&&!n.read).slice(0,2).forEach(n=>toast(ntext(n)));if(d.prefs&&d.prefs.lang!==S.lang)api("/prefs","POST",{lang:S.lang}).catch(()=>{});Object.assign(S,{notifs:d.notifs||[],prefs:d.prefs||{outbid:true,won:true},user:d.user,auctions:d.auctions,past:d.past,myBids:d.myBids,orders:d.orders,myListings:d.myListings||[],cases:d.cases||[],blocked:d.blocked||[]});if(!(view==="sell"||modal||pedit))render()}catch(e){if(e.status===401){TOKEN=null;S.user=null;try{localStorage.removeItem("hb-token")}catch(x){}render()}}}
+async function fbLogin(cred){let r;if(CFG.dev&&!cred)r=await api("/auth/google","POST",{dev:($("#devname")||{}).value});else r=await api("/auth/google","POST",{credential:cred});TOKEN=r.token;try{localStorage.setItem("hb-token",TOKEN)}catch(e){}await load()}
+let gReady=false;
+function gInit(){try{google.accounts.id.initialize({client_id:CFG.googleClientId,callback:r=>fbLogin(r.credential).catch(e=>toast(e.message||"Google sign-in failed."))});gReady=true}catch(e){}}
+function drawG(){const b=document.getElementById("gbtn");if(b&&gReady&&!b.firstChild){try{google.accounts.id.renderButton(b,{theme:"outline",size:"large",width:280,text:"continue_with"})}catch(e){}}}
+let view="live",tab="card",phone="",modal=null,menu=false,toastT,devCode="";
+const shipTxt=a=>a.by==="pickup"?"Self pickup only":`Self pickup or shipping (+${fmt(a.ship)})`;
+function infoHTML(a){const im=(a.imgs||[]).map(s=>`<img src="${s}" alt="" data-a="pic" style="height:90px;border-radius:8px;cursor:pointer">`).join("");return `${im?`<div style="display:flex;gap:.4rem;overflow-x:auto;margin:.6rem 0">${im}</div>`:""}<div class="panel" style="margin:.8rem 0;padding:.8rem"><b>About this item</b>${a.mine?' <span class="tag">Your listing</span>':""}<p class="mute" style="margin:.3rem 0">${esc(a.info||"No description from the seller.")}</p></div>`}
+const fresh=()=>({type:"card",title:"",set:"",city:"",cond:"",info:"",start:"",ship:"",by:"pickup",days:"72",ref:"",imgs:[]});
+let draft=fresh();let zoomSrc="";
+function applyTheme(t){const x=document.documentElement;if(t)x.setAttribute("data-theme",t);else x.removeAttribute("data-theme")}
+const isDark=()=>{const t=document.documentElement.getAttribute("data-theme");return t?t==="dark":!!(window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches)};
+try{applyTheme(localStorage.getItem("hb-theme"))}catch(e){}
+function readForm(){["type","title","set","city","cond","info","start","ship","days","ref"].forEach(k=>{const e=$("#f_"+k);if(e)draft[k]=e.value});const r=document.querySelector("input[name=by]:checked");if(r)draft.by=r.value}
+const shrink=f=>new Promise((ok,no)=>{const r=new FileReader();r.onerror=no;r.onload=()=>{const i=new Image();i.onerror=no;i.onload=()=>{const k=Math.min(1,1000/Math.max(i.width,i.height)),c=document.createElement("canvas");c.width=i.width*k;c.height=i.height*k;c.getContext("2d").drawImage(i,0,0,c.width,c.height);ok(c.toDataURL("image/jpeg",.75))};i.src=r.result};r.readAsDataURL(f)});
+const cur=a=>a.bids.length?a.bids[a.bids.length-1].a:a.start;
+const minBid=a=>a.bids.length?cur(a)+a.inc:a.start;
+const left=ms=>{const he=S.lang==="he",u=he?["י","ש","ד","שנ"]:["d","h","m","s"];if(ms<=0)return he?"נסגר":"Closed";const s=Math.floor(ms/1e3),d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?`${d}${u[0]} ${h}${u[1]}`:h?`${h}${u[1]} ${m}${u[2]}`:`${m}${u[2]} ${String(s%60).padStart(2,"0")}${u[3]}`};
+function toast(t){clearTimeout(toastT);let e=$(".toast");if(e)e.remove();document.body.insertAdjacentHTML("beforeend",`<div class="toast" role="status">${esc(S.lang==="he"?heStr(t):t)}</div>`);toastT=setTimeout(()=>$(".toast")&&$(".toast").remove(),3200)}
+
+function onboarding(){
+ if(step()===0)return `<div class="center panel"><h1>Holo Bid</h1><p>Live auctions for Pokemon cards and booster packs. Every bid and listing is binding, so we verify who you are first.</p>${CFG.dev?'<label>Dev sign-in name<input id="devname" value="Dana L."></label><br><br><button data-a="fb" style="width:100%">Continue with Google (dev)</button>':CFG.googleClientId?'<div id="gbtn" style="display:flex;justify-content:center;min-height:44px"></div>':'<p class="mute">Sign-in is not configured yet.</p>'}</div>`;
+ if(step()===1)return `<div class="center panel"><h2>Verify your phone number</h2><p class="mute">Required to bid or sell. We send a 6-digit code.</p><label>Mobile number<input id="ph" inputmode="tel" placeholder="050 123 4567" value="${esc(phone)}"></label><br><br><button class="ghost" data-a="sms" style="width:100%">Send code</button>${devCode?`<p class="note">Dev code: ${devCode}</p>`:""}<br><label>Code<input id="otp" inputmode="numeric" maxlength="6" placeholder="123456"></label><br><br><button data-a="otp" style="width:100%">Verify number</button></div>`;
+ if(step()===2)return `<div class="center panel"><h2>Your Facebook contact (optional)</h2><p class="mute">If you want the other person to be able to message you on Messenger, open your Facebook profile and paste the link, or type your username. You can skip this. WhatsApp is always available through your phone number.</p><label>Facebook profile link or username<input id="fbl" placeholder="facebook.com/your.name" value="${esc(fbHandle||"")}"></label><br><br><button data-a="fbc" style="width:100%">Continue</button><br><br><button class="ghost" data-a="fbskip" style="width:100%">Skip</button></div>`;
+ return `<div class="center panel"><h2>Before you start</h2><p>You must agree to these terms to use Holo Bid:</p><ul class="terms"><li><b>Bids are legally binding.</b> If you win, you must buy.</li><li><b>Listings are binding.</b> If you sell, you must ship to the winner.</li><li><b>Pay within 24 hours</b> of the auction closing.</li><li>Non-payment is reviewed by an admin, and the defaulting buyer or seller can be blocked permanently.</li><li>If you win or sell an item, your phone number and Facebook contact are shared with the other person so you can arrange payment and delivery.</li></ul><label style="display:flex;gap:.6rem;align-items:flex-start"><input id="tos" type="checkbox" style="width:auto;margin-top:.3rem"> I have read and agree to the Terms of Service.</label><p class="mute"><a href="/terms" target="_blank">Terms of Service</a> · <a href="/privacy" target="_blank">Privacy policy</a></p><button data-a="tos" id="tosb" disabled style="width:100%">Create account</button></div>`;
+}
+
+function cardHTML(a){
+ return `<article class="card" data-a="open" data-id="${a.id}" tabindex="0"><div class="art" style="--h:${(a.id*53)%360}">${a.imgs&&a.imgs[0]?`<img src="${a.imgs[0]}" alt="" style="width:100%;height:100%;object-fit:cover">`:`<b>${a.type==="card"?"★":"▣"}</b>`}<small>${esc(a.set)}</small><span class="t" data-end="${a.end}">${left(a.end-now())}</span></div><div class="body"><h3>${esc(a.title)}</h3><span class="mute">${esc(a.cond)}</span><span class="mute">${esc(a.city||"")}</span><div class="row"><span class="price">${fmt(cur(a))}</span><span class="mute">${a.bids.length} bid${a.bids.length===1?"":"s"}</span></div><span class="ship">${shipTxt(a)}</span></div></article>`;
+}
+function live(){
+ return `<h1>Live auctions</h1><div class="searchbar"><input id="q" type="search" value="${esc(query)}" placeholder="Search cards, sets, cities..." autocomplete="off"><button class="ghost" data-a="qclear" ${query?"":"hidden"}>Clear</button></div><p style="margin:0 0 .6rem"><button class="ghost" data-a="ended" aria-pressed="${ended}">${ended?"Hide ended auctions":"Show ended auctions"}</button></p><div class="tabs"><button class="${tab==="card"?"on":""}" data-a="tab" data-t="card">Cards</button><button class="${tab==="booster"?"on":""}" data-a="tab" data-t="booster">Booster packs</button><button class="${tab==="all"?"on":""}" data-a="tab" data-t="all">All</button></div><div id="results">${liveResults()}</div>`;
+}
+function hist(){
+ const my=view==="hist:mine";
+ if(my){
+  const rows=S.myBids.slice().reverse().map(b=>`<tr><td>${esc(b.title)}</td><td>${fmt(b.amt)}</td><td>${new Date(b.t).toLocaleString()}</td></tr>`).join("");
+  return `<h1>My history</h1><div class="panel scroll">${rows?`<table><tr><th>Item</th><th>My bid</th><th>Placed</th></tr>${rows}</table>`:'<p class="mute">You have not placed any bids yet. Open a live auction to bid.</p>'}</div>`;
+ }
+ const t=view==="hist:cards"?"card":"booster";
+ return `<h1>Past ${t==="card"?"card":"booster pack"} auctions</h1><p class="mute">Final closing prices, excluding shipping.</p><div class="searchbar"><input id="hq" type="search" value="${esc(hquery)}" placeholder="Search by name or set..." autocomplete="off"><button class="ghost" data-a="hclear" ${hquery?"":"hidden"}>Clear</button></div><div class="panel scroll" id="hres">${histTable()}</div>`;
+}
+function admin(){
+ const rows=S.cases.map(c=>{
+  const bad=c.party==="buyer"?c.buyer:c.seller;
+  return `<div class="panel"><div class="row"><h3>${esc(c.item)}: ${fmt(c.amt)}</h3><span class="tag ${c.status==="open"?"bad":"ok"}">${esc(c.status)}</span></div><p>${esc(c.why)}</p><p class="mute">Buyer ${esc(c.buyer)}, seller ${esc(c.seller)}. Reported party: ${esc(bad)}.</p>${c.status==="open"?`<input id="n${c.id}" placeholder="Resolution note (required)"><br><br><div class="row" style="justify-content:flex-start;flex-wrap:wrap"><button class="danger" data-a="block" data-id="${c.id}">Block ${esc(bad)}</button><button class="ghost" data-a="dismiss" data-id="${c.id}">Dismiss case</button></div>`:`<p class="mute">Resolved: ${esc(c.note||"")}</p>`}</div>`}).join("");
+ return `<h1>Admin: non-payment cases</h1><p class="mute">Review each case, then block the defaulting buyer or seller, or dismiss it. Blocked: ${S.blocked.length?esc(S.blocked.join(", ")):"nobody yet"}.</p>${rows}`;
+}
+function sell(){const d=draft,v=k=>esc(d[k]);return `<h1>Create auction</h1><p class="mute">Listings are binding once published.</p><div class="panel" style="display:grid;gap:.9rem"><label>Item type<select id="f_type"><option value="card" ${d.type==="card"?"selected":""}>Card</option><option value="booster" ${d.type==="booster"?"selected":""}>Booster pack</option></select></label><label>Title<input id="f_title" value="${v("title")}" placeholder="Charizard ex SAR"></label><label>Set<input id="f_set" value="${v("set")}" placeholder="Obsidian Flames 223/197"></label><label>Condition or grade<input id="f_cond" value="${v("cond")}" placeholder="Raw Near Mint, PSA 10, or Sealed"></label><label>Pickup city (where the item is)<input id="f_city" value="${v("city")}" placeholder="Tel Aviv"></label><label>Description and card details<textarea id="f_info" rows="4" placeholder="Rarity, language, flaws, what is included">${v("info")}</textarea></label><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))"><label>Starting price (₪)<input id="f_start" type="number" inputmode="numeric" min="1" value="${v("start")}"></label><label>Duration<select id="f_days">${[0.5,1,3,6,12,24,72,120,168].map(n=>`<option value="${n}" ${+d.days===n?"selected":""}>${n<1?n*60+" minutes":n<24?n+" hour"+(n>1?"s":""):n/24+" day"+(n>24?"s":"")}</option>`).join("")}</select></label></div><fieldset><legend>How can the buyer get the item?</legend><label style="display:flex;gap:.5rem;align-items:center"><input type="radio" name="by" value="pickup" ${d.by==="pickup"?"checked":""}> Self pickup only</label><label style="display:flex;gap:.5rem;align-items:center"><input type="radio" name="by" value="both" ${d.by==="both"?"checked":""}> Self pickup or shipping (you set the shipping price)</label></fieldset>${d.by==="both"?`<label>Shipping price (₪)<input id="f_ship" type="number" inputmode="numeric" min="0" value="${v("ship")}"></label>`:""}<label>Photos (${d.imgs.length}/10, at least 3: front, back, close-up)<input id="pics" type="file" accept="image/*" multiple></label><div style="display:flex;gap:.5rem;flex-wrap:wrap">${d.imgs.map((s,i)=>`<div style="position:relative"><img src="${s}" alt="Photo ${i+1}" style="height:80px;border-radius:8px;display:block"><button class="danger" data-a="rmpic" data-i="${i}" aria-label="Remove photo ${i+1}" style="position:absolute;top:2px;inset-inline-end:2px;padding:0 .45rem">×</button></div>`).join("")}</div><label style="display:flex;gap:.6rem;align-items:flex-start"><input id="f_bind" type="checkbox" style="margin-top:.3rem"> I understand this listing is binding. If it sells, I must ship to the winner.</label><button data-a="publish">Publish auction</button></div>`}
+const STAT={awaiting_payment:"Awaiting payment",payment_claimed:"Buyer says paid",paid:"Paid",shipped:"Shipped",completed:"Completed",overdue:"Overdue, under admin review",review:"Under admin review",resolved:"Resolved by admin"};
+function orders(){
+ const rows=S.orders.slice().reverse().map(o=>{const buy=o.role==="buyer",tot=o.price+(o.by==="both"&&!o.pickup?o.ship:0),B=(op,t,c)=>`<button class="${c||""}" data-a="ord" data-id="${o.id}" data-op="${op}">${t}</button>`;let acts="";
+  if(o.status==="awaiting_payment")acts=buy?B("paid","I paid"):"";
+  else if(o.status==="payment_claimed")acts=buy?"":B("recv","Payment received")+B("norecv","Not received","ghost");
+  else if(o.status==="paid")acts=buy?B("noship",o.pickup?"Seller did not hand over the item":"Seller has not shipped","ghost"):B("ship",o.pickup?"Mark as handed over":"Mark as shipped");
+  else if(o.status==="shipped")acts=buy?B("got","I received it"):"";
+  return `<div class="panel"><div class="row"><h3>${esc(o.title)}</h3><span class="tag ${o.status==="completed"?"ok":["overdue","review"].includes(o.status)?"bad":""}">${STAT[o.status]}</span></div><p class="mute">You are the ${buy?"buyer":"seller"}. ${buy?"Seller":"Buyer"}: ${esc(buy?o.seller:o.buyer)}. Total ${fmt(tot)} (${fmt(o.price)}${o.pickup?", self pickup in "+o.city:" + "+fmt(o.ship)+" shipping"}).</p>${contactHTML(o,buy)}${o.status==="awaiting_payment"?`<p>Payment due in <b data-due="${o.due}">${left(o.due-now())}</b></p>`:""}<div class="row" style="justify-content:flex-start;flex-wrap:wrap">${acts}</div></div>`}).join("");
+ return `<h1>My orders</h1><p class="mute">Won auctions and your sales. Payment is due within 24 hours of closing. Unpaid orders go to the admin queue.</p>${rows||'<div class="panel"><p class="mute">No orders yet. Win an auction or sell an item to see it here.</p></div>'}`}
+const HE={
+"Live auctions for Pokemon cards and booster packs. Every bid and listing is binding, so we verify who you are first.":"מכרזים חיים לקלפי פוקימון ולחבילות בוסטר. כל הצעה וכל מכרז מחייבים, ולכן אנחנו מאמתים קודם מי אתם.",
+"Continue with Google (dev)":"המשך עם גוגל (פיתוח)","Sign-in is not configured yet.":"ההתחברות עדיין לא הוגדרה.","Google sign-in failed.":"ההתחברות עם גוגל נכשלה.","Your Facebook contact (optional)":"פרטי הפייסבוק שלך (אופציונלי)","If you want the other person to be able to message you on Messenger, open your Facebook profile and paste the link, or type your username. You can skip this. WhatsApp is always available through your phone number.":"אם תרצו שהצד השני יוכל לשלוח לכם הודעה במסנג׳ר, פתחו את הפרופיל שלכם בפייסבוק והדביקו את הקישור, או הקלידו שם משתמש. אפשר לדלג. וואטסאפ תמיד זמין דרך מספר הטלפון.","Skip":"דלג","Prototype: Facebook sign-in and SMS are simulated.":"אב־טיפוס: ההתחברות עם פייסבוק וה־SMS מדומים.",
+"Verify your phone number":"אימות מספר הטלפון","Required to bid or sell. We send a 6-digit code.":"נדרש כדי להציע הצעות או למכור. נשלח קוד בן 6 ספרות.",
+"Mobile number":"מספר נייד","Code (demo: 123456)":"קוד (דמו: 123456)","Verify number":"אימות המספר",
+"Before you start":"לפני שמתחילים","You must agree to these terms to use Holo Bid:":"כדי להשתמש ב-Holo Bid יש להסכים לתנאים הבאים:",
+"Bids are legally binding.":"הצעות מחייבות מבחינה משפטית.","If you win, you must buy.":"אם זכיתם, חובה לרכוש.",
+"Listings are binding.":"מכרזים מחייבים.","If you sell, you must ship to the winner.":"אם מכרתם, חובה לשלוח לזוכה.",
+"Pay within 24 hours":"תשלום בתוך 24 שעות","of the auction closing.":"מרגע סגירת המכרז.",
+"Non-payment is reviewed by an admin, and the defaulting buyer or seller can be blocked permanently.":"אי־תשלום נבדק על ידי מנהל, והקונה או המוכר שהפר עלול להיחסם לצמיתות.",
+"I have read and agree to the Terms of Service.":"קראתי ואני מסכים/ה לתנאי השימוש.","Create account":"יצירת חשבון",
+"Live":"מכרזים","History ▾":"היסטוריה ▾","My orders":"ההזמנות שלי","Create auction":"יצירת מכרז","Admin":"ניהול",
+"Past card auctions":"מכרזי קלפים שהסתיימו","Past booster pack auctions":"מכרזי חבילות בוסטר שהסתיימו","My history":"ההיסטוריה שלי",
+"Your account is blocked. You can browse but not bid.":"החשבון שלכם חסום. אפשר לעיין אבל לא להציע הצעות.",
+"Live auctions":"מכרזים חיים","Cards":"קלפים","Booster packs":"חבילות בוסטר","No live auctions in this category. Check back soon.":"אין מכרזים חיים בקטגוריה הזו. כדאי לחזור בקרוב.",
+"Free shipping (seller pays)":"משלוח חינם (המוכר משלם)",
+"Close":"סגור","Bid history":"היסטוריית הצעות","About this item":"על הפריט","Your listing":"המכרז שלכם","No description from the seller.":"אין תיאור מהמוכר.",
+"Last sold online:":"נמכר לאחרונה אונליין:","not available here":"לא זמין כאן","Check eBay sold listings":"בדקו מכירות באיביי",
+"Shipping is paid by the seller.":"המוכר משלם על המשלוח.","Place bid":"הציעו הצעה","This bid is legally binding.":"ההצעה הזו מחייבת מבחינה משפטית.",
+"within 24 hours.":"בתוך 24 שעות.","Change bid":"שינוי הצעה","Confirm binding bid":"אישור הצעה מחייבת","This auction has closed.":"המכרז הזה נסגר.",
+"No bids yet. Be the first.":"עדיין אין הצעות. היו הראשונים.","Bidder":"מציע","Amount":"סכום","Time":"זמן",
+"Final closing prices, excluding shipping.":"מחירי סגירה סופיים, ללא משלוח.","Item":"פריט","Closing price":"מחיר סגירה","Bids":"הצעות","Closed":"נסגר","Unsold":"לא נמכר",
+"My bid":"ההצעה שלי","Placed":"הוגשה","You have not placed any bids yet. Open a live auction to bid.":"עדיין לא הגשתם הצעות. פתחו מכרז חי כדי להציע.",
+"Admin: non-payment cases":"ניהול: מקרי אי־תשלום","open":"פתוח","dismissed":"נסגר ללא פעולה","Dismiss case":"סגירה ללא פעולה",
+"Winner did not pay within 24 hours":"הזוכה לא שילם בתוך 24 שעות","Payment confirmed, seller has not shipped":"התשלום אושר, המוכר לא שלח","Seller says the payment was not received":"המוכר מדווח שהתשלום לא התקבל",
+"Resolution note (required)":"הערת סיכום (חובה)",
+"Listings are binding once published.":"מכרזים מחייבים מרגע הפרסום.","Item type":"סוג הפריט","Card":"קלף","Booster pack":"חבילת בוסטר","Title":"כותרת","Set":"סט",
+"Condition or grade":"מצב או ציון","Description and card details":"תיאור ופרטי הקלף","Starting price (₪)":"מחיר פתיחה (₪)","Shipping cost (₪)":"עלות משלוח (₪)","Duration":"משך המכרז",
+"Who pays shipping?":"מי משלם על המשלוח?","The buyer pays (shown on the listing before bidding)":"הקונה משלם (מוצג במכרז לפני ההצעה)","I pay (buyers see free shipping)":"אני משלם (הקונים רואים משלוח חינם)",
+"Last sold price online, if you know it (₪, optional)":"מחיר מכירה אחרון אונליין, אם ידוע (₪, לא חובה)",
+"I understand this listing is binding. If it sells, I must ship to the winner.":"אני מבין/ה שהמכרז מחייב. אם הפריט יימכר, עליי לשלוח אותו לזוכה.","Publish auction":"פרסום המכרז",
+"Rarity, language, flaws, what is included":"נדירות, שפה, פגמים, מה כלול","Raw Near Mint, PSA 10, or Sealed":"גולמי כמעט חדש, PSA 10, או חתום",
+"Won auctions and your sales. Payment is due within 24 hours of closing. Unpaid orders go to the admin queue.":"מכרזים שזכיתם בהם והמכירות שלכם. התשלום נדרש בתוך 24 שעות מהסגירה. הזמנות שלא שולמו עוברות לתור המנהל.",
+"No orders yet. Win an auction or sell an item to see it here.":"אין הזמנות עדיין. זכו במכרז או מכרו פריט כדי לראות אותו כאן.",
+"Awaiting payment":"ממתין לתשלום","Buyer says paid":"הקונה מדווח ששילם","Paid":"שולם","Shipped":"נשלח","Completed":"הושלם","Overdue, under admin review":"באיחור, בבדיקת מנהל","Under admin review":"בבדיקת מנהל","Resolved by admin":"נפתר על ידי מנהל",
+"Payment due in":"התשלום נדרש בתוך","I paid":"שילמתי","Skip 24h (demo)":"דלג 24 שעות (דמו)","Payment received":"התשלום התקבל","Not received":"לא התקבל","Seller has not shipped":"המוכר לא שלח","Mark as shipped":"סמן כנשלח","I received it":"קיבלתי",
+"Demo tools":"כלי דמו","Ends every auction you are leading or selling so you can try the payment flow now. Your listings with no bids get a test bidder.":"מסיים כל מכרז שאתם מובילים בו או מוכרים, כדי שתוכלו לנסות את תהליך התשלום עכשיו. למכרזים שלכם ללא הצעות מתווסף מציע לבדיקה.",
+"End my auctions now":"סיום המכרזים שלי עכשיו","My bid ":"ההצעה שלי",
+"Enter a valid mobile number.":"הזינו מספר נייד תקין.","Wrong code. Use 123456 in this demo.":"קוד שגוי. בדמו הזה השתמשו ב-123456.","Blocked accounts cannot bid.":"חשבון חסום לא יכול להציע הצעות.",
+"You cannot bid on your own listing.":"אי אפשר להציע הצעה על מכרז שלכם.","Auction closed.":"המכרז נסגר.","Someone outbid you. Review the new minimum.":"מישהו הציע יותר. בדקו את המינימום החדש.",
+"Bid placed. Auction extended by 2 minutes.":"ההצעה התקבלה. המכרז הוארך ב-2 דקות.","Add a resolution note first.":"הוסיפו קודם הערת סיכום.","Add a title.":"הוסיפו כותרת.","Set a starting price.":"הגדירו מחיר פתיחה.",
+"Set the shipping cost (0 if free).":"הגדירו עלות משלוח (0 אם חינם).","Add at least 3 photos.":"הוסיפו לפחות 3 תמונות.","Confirm that the listing is binding.":"אשרו שהמכרז מחייב.",
+"Auction published. Your listing is now binding.":"המכרז פורסם. הוא מחייב מעכשיו.","Blocked accounts cannot list.":"חשבון חסום לא יכול לפרסם מכרזים.","An auction just closed.":"מכרז נסגר כרגע.",
+"Your auctions closed. Check the orders below.":"המכרזים שלכם נסגרו. בדקו את ההזמנות למטה."};
+Object.assign(HE,{"Show ended auctions":"הצג גם מכרזים שהסתיימו","Hide ended auctions":"הסתר מכרזים שהסתיימו","Ended auctions":"מכרזים שהסתיימו","No ended auctions match.":"אין מכרזים שהסתיימו שמתאימים.","Log out":"התנתקות","Send code":"שליחת קוד","Code":"קוד","Code sent.":"הקוד נשלח.","Please sign in.":"יש להתחבר.","Facebook sign-in failed.":"ההתחברות עם פייסבוק נכשלה.","Facebook sign-in was cancelled.":"ההתחברות עם פייסבוק בוטלה.","This number is already used by another account.":"המספר הזה כבר בשימוש בחשבון אחר.","Wait a minute before asking for a new code.":"המתינו דקה לפני בקשת קוד חדש.","Too many codes requested. Try again in an hour.":"התבקשו יותר מדי קודים. נסו שוב בעוד שעה.","Could not send the SMS. Try again.":"לא ניתן לשלוח SMS. נסו שוב.","Code expired. Ask for a new one.":"הקוד פג תוקף. בקשו קוד חדש.","Too many attempts. Ask for a new code.":"יותר מדי ניסיונות. בקשו קוד חדש.","Wrong code.":"קוד שגוי.","Finish sign-up first.":"יש להשלים קודם את ההרשמה.","Blocked accounts cannot do this.":"חשבון חסום לא יכול לבצע פעולה זו.","You can have at most 5 live listings.":"אפשר להחזיק עד 5 מכרזים חיים במקביל.","Photos must be JPEG, PNG or WebP.":"התמונות חייבות להיות JPEG, PNG או WebP.","A photo is too large.":"אחת התמונות גדולה מדי.","This order changed. Refresh.":"ההזמנה השתנתה. רעננו את הדף.","Too many requests. Try again later.":"יותר מדי בקשות. נסו שוב מאוחר יותר.","Something went wrong. Try again.":"משהו השתבש. נסו שוב.","Enter a valid bid.":"הזינו הצעה תקינה.","Not allowed.":"אין הרשאה.","Pick a duration.":"בחרו משך מכרז.","Pick an item type.":"בחרו סוג פריט.","How do you want to receive it?":"איך תרצו לקבל את הפריט?","Item location:":"מיקום הפריט:","Pickup city (where the item is)":"עיר איסוף (איפה הפריט נמצא)","Enter the pickup city.":"הזינו את עיר האיסוף.","Mark as handed over":"סמן כנמסר","Light":"בהיר","Dark":"כהה","Notifications":"התראות","No notifications yet.":"אין התראות עדיין.","Mark all as read":"סמן הכול כנקרא","Notification settings":"הגדרות התראות","Tell me when someone outbids me":"עדכנו אותי כשמישהו מציע הצעה גבוהה משלי","Tell me when I win an auction":"עדכנו אותי כשאני זוכה במכרז","Alerts on this device also work when the site is closed.":"התראות במכשיר פועלות גם כשהאתר סגור.","Browser alerts work while this page is open.":"התראות הדפדפן פועלות כל עוד הדף פתוח.","Turn on device alerts":"הפעלת התראות במכשיר","Turn off device alerts":"כיבוי התראות במכשיר","This browser does not support notifications.":"הדפדפן הזה לא תומך בהתראות.","Notifications are blocked in your browser settings.":"ההתראות חסומות בהגדרות הדפדפן.","Device alerts are on.":"התראות המכשיר פועלות.","Device alerts are off.":"התראות המכשיר כבויות.","Simulate: someone outbids me":"דמו: מישהו מציע יותר ממני","You are not leading any auction. Place a bid first.":"אתם לא מובילים באף מכרז. הגישו הצעה קודם.","How can the buyer get the item?":"איך הקונה יכול לקבל את הפריט?","Self pickup only":"איסוף עצמי בלבד","Self pickup or shipping (you set the shipping price)":"איסוף עצמי או משלוח (אתם קובעים את מחיר המשלוח)","Shipping price (₪)":"מחיר משלוח (₪)","Self pickup only. No shipping.":"איסוף עצמי בלבד. ללא משלוח.","Contact details":"פרטי קשר","Phone:":"טלפון:","Facebook:":"פייסבוק:","WhatsApp":"וואטסאפ","Messenger":"מסנג'ר","Facebook profile":"פרופיל פייסבוק","(demo)":"(דמו)","Seller did not hand over the item":"המוכר לא מסר את הפריט","Your Facebook contact":"פרטי הפייסבוק שלך","After an auction ends, the other person can message you on Messenger. Open your Facebook profile and paste the link, or type your username.":"אחרי שמכרז מסתיים, הצד השני יוכל לשלוח לך הודעה במסנג'ר. פתחו את הפרופיל שלכם בפייסבוק והדביקו את הקישור, או הקלידו את שם המשתמש.","Facebook profile link or username":"קישור לפרופיל פייסבוק או שם משתמש","Continue":"המשך","Enter a valid Facebook profile link or username.":"הזינו קישור תקין לפרופיל פייסבוק או שם משתמש.","Choose how the buyer can get the item.":"בחרו איך הקונה יכול לקבל את הפריט.","If you win or sell an item, your phone number and Facebook contact are shared with the other person so you can arrange payment and delivery.":"אם זכיתם בפריט או מכרתם פריט, מספר הטלפון ופרטי הפייסבוק שלכם יועברו לצד השני כדי שתוכלו לתאם תשלום ומסירה.","Tell me when my item sells":"עדכנו אותי כשהפריט שלי נמכר","Search cards, sets, cities...":"חיפוש קלפים, סטים, ערים...","Search by name or set...":"חיפוש לפי שם או סט...","No auctions match your search.":"אין מכרזים שמתאימים לחיפוש.","All":"הכול","Clear":"נקה","Show all":"הצג הכול","Profile":"פרופיל","Shared with the other person after an auction.":"מוצג לצד השני אחרי מכרז.","Edit":"עריכה","Save":"שמירה","Cancel":"ביטול","New mobile number":"מספר נייד חדש","Send code":"שליחת קוד","Code":"קוד","Verify and save":"אימות ושמירה","Phone number updated.":"מספר הטלפון עודכן.","Facebook contact updated.":"פרטי הפייסבוק עודכנו.","Code sent.":"הקוד נשלח.","My auctions":"המכרזים שלי","Leading now":"מובילים כרגע","Published by me":"פורסמו על ידי","Won by me":"זכיתי בהם","You have not published any auctions yet.":"עדיין לא פרסמתם מכרזים.","You have not won any auctions yet.":"עדיין לא זכיתם במכרזים.","Active":"פעיל","Sold":"נמכר","Cancelled":"בוטל","Account":"חשבון","Delete my account":"מחיקת החשבון שלי","Delete account?":"למחוק את החשבון?","This erases your name, phone number, Facebook contact and notifications. Auction and order records stay without your identity. This cannot be undone.":"הפעולה מוחקת את השם, מספר הטלפון, פרטי הפייסבוק וההתראות שלכם. רשומות המכרזים וההזמנות נשארות בלי הזיהוי שלכם. אי אפשר לבטל.","Yes, delete my account":"כן, מחק את החשבון שלי","Your account was deleted.":"החשבון נמחק.","You have live auctions. Wait until they end first.":"יש לכם מכרזים חיים. המתינו שיסתיימו קודם.","Finish your open orders first.":"סיימו קודם את ההזמנות הפתוחות.","This account cannot be deleted.":"אי אפשר למחוק את החשבון הזה.","Privacy policy":"מדיניות פרטיות","Terms of Service":"תנאי שימוש","Data deletion":"מחיקת מידע","Raw, Near Mint":"גולמי, כמעט חדש","Raw, Lightly Played":"גולמי, בלאי קל","Sealed":"חתום","Not stated":"לא צוין","Unknown set":"סט לא ידוע",
+"Special Illustration Rare Charizard ex from Obsidian Flames (2023). One of the most chased cards of the Scarlet & Violet era.":"שריזארד ex בנדירות Special Illustration Rare מ-Obsidian Flames (2023). אחד הקלפים המבוקשים ביותר בעידן Scarlet & Violet.",
+"Alternate Art Umbreon VMAX from Evolving Skies (2021), nicknamed Moonbreon. Darkness type, a top modern chase card.":"אומברון VMAX באמנות חלופית מ-Evolving Skies (2021), המכונה Moonbreon. סוג חושך, קלף מבוקש במיוחד.",
+"Mew ex secret rare from Paldean Fates (2024). Check the photos for edge wear.":"מיו ex נדיר סודי מ-Paldean Fates (2024). בדקו בתמונות בלאי בקצוות.",
+"Alternate Art Gengar VMAX from Fusion Strike (2021), graded PSA 9.":"גנגר VMAX באמנות חלופית מ-Fusion Strike (2021), מדורג PSA 9.",
+"Sealed booster pack from Evolving Skies (2021), the set known for the Eeveelution alternate arts.":"חבילת בוסטר חתומה מ-Evolving Skies (2021), הסט המוכר בזכות האמנויות החלופיות של האיבוליושנס.",
+"Sealed bundle of 6 packs from Scarlet & Violet 151 (2023), a set of the original Kanto Pokemon.":"באנדל חתום של 6 חבילות מ-Scarlet & Violet 151 (2023), סט עם פוקימוני קאנטו המקוריים.",
+"Sealed Elite Trainer Box from Crown Zenith (2023).":"קופסת Elite Trainer חתומה מ-Crown Zenith (2023)."});
+const N="(₪[\\d,]+)";
+const CITY={"Tel Aviv":"תל אביב","Jerusalem":"ירושלים","Haifa":"חיפה","Beer Sheva":"באר שבע","Rishon LeZion":"ראשון לציון","Petah Tikva":"פתח תקווה","Ashdod":"אשדוד","Netanya":"נתניה","Holon":"חולון","Ramat Gan":"רמת גן","Kiryat Ono":"קריית אונו","Herzliya":"הרצליה","Rehovot":"רחובות","Modiin":"מודיעין","Eilat":"אילת"};
+Object.assign(HE,CITY);
+const RX=[
+[/^(.+)\. (Sealed|Raw, Near Mint|Raw, Lightly Played|PSA \d+|Not stated)\.$/,(m,s,c)=>`${s}. ${HE[c]||c}.`],
+[/^Shipping \((\+₪[\d,]+)\)$/,(m,p)=>`משלוח (${p})`],
+[/^Self pickup in (.+) \(no shipping fee\)$/,(m,c)=>`איסוף עצמי ב${CITY[c]||c} (ללא דמי משלוח)`],
+[new RegExp(`^If you win, you must pay ${N} \\(self pickup in (.+), no shipping fee\\) within 24 hours\\.$`),(m,p,c)=>`אם תזכו, עליכם לשלם ${p} (איסוף עצמי ב${CITY[c]||c}, ללא דמי משלוח) בתוך 24 שעות.`],
+[new RegExp(`^Bid placed: ${N}$`),(m,p)=>`ההצעה הוגשה: ${p}`],
+[/^You were outbid on "(.+)"\. New highest bid: (₪[\d,]+)\.$/,(m,t,p)=>`הוצעה הצעה גבוהה יותר על "${t}". ההצעה הגבוהה ביותר: ${p}.`],
+[/^You won "(.+)" for (₪[\d,]+)\. Pay within 24 hours\.$/,(m,t,p)=>`זכיתם ב"${t}" ב-${p}. התשלום נדרש בתוך 24 שעות.`],
+[/^Self pickup or shipping \((\+₪[\d,]+)\)$/,(m,p)=>`איסוף עצמי או משלוח (${p})`],
+[/^(\d+) results?$/,(m,n)=>n==="1"?"תוצאה אחת":`${n} תוצאות`],
+[/^(\d+) more in (Booster packs|Cards)\.$/,(m,n,c)=>`עוד ${n} בקטגוריית ${c==="Cards"?"קלפים":"חבילות בוסטר"}.`],
+[/^Your item "(.+)" sold for (₪[\d,]+)\. The buyer has 24 hours to pay\.$/,(m,t,p)=>`הפריט "${t}" נמכר ב-${p}. לקונה יש 24 שעות לשלם.`],
+[/^(\d+) bids?$/,(m,n)=>n==="1"?"הצעה אחת":`${n} הצעות`],
+[new RegExp(`^\\+ ${N} shipping \\(buyer pays\\)$`),(m,p)=>`+ ${p} משלוח (על הקונה)`],
+[new RegExp(`^Your bid \\(minimum ${N}\\)$`),(m,p)=>`ההצעה שלכם (מינימום ${p})`],
+[new RegExp(`^Total if you win: bid \\+ ${N} shipping\\.$`),(m,p)=>`סה״כ אם תזכו: הצעה + ${p} משלוח.`],
+[/^Bid history \((\d+)\)$/,(m,n)=>`היסטוריית הצעות (${n})`],
+[new RegExp(`^If you win, you must pay ${N} \\+ ${N} shipping =$`),(m,a,b)=>`אם תזכו, עליכם לשלם ${a} + ${b} משלוח =`],
+[new RegExp(`^If you win, you must pay ${N} \\(the seller pays shipping\\) within 24 hours\\.$`),(m,a)=>`אם תזכו, עליכם לשלם ${a} (המוכר משלם על המשלוח) בתוך 24 שעות.`],
+[new RegExp(`^${N} \\(seller-reported\\)$`),(m,p)=>`${p} (לפי המוכר)`],
+[/^Review each case, then block the defaulting buyer or seller, or dismiss it\. Blocked: (.*)\.$/,(m,x)=>`בדקו כל מקרה, ואז חסמו את הקונה או המוכר שהפר, או סגרו אותו ללא פעולה. חסומים: ${x==="nobody yet"?"אף אחד עדיין":x}.`],
+[/^Buyer (.+?), seller (.+?)\. Reported party: (.+)\.$/,(m,b,s,r)=>`קונה: ${b}, מוכר: ${s}. הצד המדווח: ${r}.`],
+[/^Block (.+)$/,(m,n)=>`חסימת ${n}`],[/^blocked: (.+)$/,(m,n)=>`נחסם: ${n}`],[/^Resolved: (.*)$/,(m,n)=>`נפתר: ${n}`],
+[new RegExp(`^You are the (buyer|seller)\\. (Seller|Buyer): (.+)\\. Total ${N} \\(${N}( \\+ ${N} shipping|, shipping paid by seller|, self pickup in (.+?))\\)\\.$`),(m,r,o,name,tot,p,rest,sh,pc)=>`אתם ה${r==="buyer"?"קונה":"מוכר"}. ${o==="Seller"?"מוכר":"קונה"}: ${name}. סה״כ ${tot} (${p}${sh?` + ${sh} משלוח`:pc?`, איסוף עצמי ב${CITY[pc]||pc}`:", המשלוח על המוכר"}).`],
+[/^(\d+) minutes$/,(m,n)=>`${n} דקות`],[/^1 hour$/,()=>"שעה אחת"],[/^(\d+) hours$/,(m,n)=>`${n} שעות`],[/^1 day$/,()=>"יום אחד"],[/^(\d+) days$/,(m,n)=>`${n} ימים`],
+[/^Photos \((\d+)\/10, at least 3: front, back, close-up\)$/,(m,n)=>`תמונות (${n}/10, לפחות 3: חזית, גב, תקריב)`],
+[/^Remove photo (\d+)$/,(m,n)=>`הסרת תמונה ${n}`],
+[new RegExp(`^Bid must be at least ${N}\\.$`),(m,p)=>`ההצעה חייבת להיות לפחות ${p}.`],
+[new RegExp(`^Binding bid placed: ${N}$`),(m,p)=>`הוגשה הצעה מחייבת: ${p}`],
+[/^Could not read (.+)$/,(m,f)=>`לא ניתן לקרוא את ${f}`]];
+function heStr(s){const k=s.trim();if(!k)return s;let r=HE[k];if(r===undefined)for(const [re,f] of RX){const m=k.match(re);if(m){r=f(...m);break}}return r===undefined?s:s.replace(k,()=>r)}
+function trNode(root){if(S.lang!=="he"||!root)return;const wk=document.createTreeWalker(root,NodeFilter.SHOW_TEXT),ns=[];while(wk.nextNode())ns.push(wk.currentNode);
+ ns.forEach(n=>{const r=heStr(n.nodeValue);if(r!==n.nodeValue)n.nodeValue=r});
+ root.querySelectorAll("[placeholder],[aria-label]").forEach(e=>["placeholder","aria-label"].forEach(a=>{if(e.hasAttribute(a))e.setAttribute(a,heStr(e.getAttribute(a)))}))}
+function render(){render0();const h=S.lang==="he";document.documentElement.dir=h?"rtl":"ltr";document.documentElement.lang=h?"he":"en";trNode($("#app"));drawG()}
+const unreadN=()=>(S.notifs||[]).filter(n=>!n.read).length;
+const ntext=n=>n.type==="won"?`You won "${n.title}" for ${fmt(n.amount)}. Pay within 24 hours.`:n.type==="sold"?`Your item "${n.title}" sold for ${fmt(n.amount)}. The buyer has 24 hours to pay.`:`You were outbid on "${n.title}". New highest bid: ${fmt(n.amount)}.`;
+function notifHTML(){const P=S.prefs||{outbid:true,won:true};
+ const rows=(S.notifs||[]).map(n=>`<div class="panel" data-a="notif" data-id="${n.id}" style="cursor:pointer;margin:0 0 .5rem;padding:.7rem;${n.read?"":"border-color:var(--blue);border-width:2px"}"><div>${esc(ntext(n))}</div><div class="mute">${new Date(n.t).toLocaleString()}</div></div>`).join("");
+ const chk=(k,t)=>`<label style="display:flex;gap:.6rem;align-items:center;margin:.3rem 0"><input type="checkbox" data-a="pref" data-k="${k}" ${P[k]!==false?"checked":""}> ${t}</label>`;
+ return `<div class="modal" data-a="close"><div class="sheet" data-stop><div class="row"><h2>Notifications</h2><button class="ghost" data-a="close">Close</button></div><div style="margin:.8rem 0">${rows||'<p class="mute">No notifications yet.</p>'}</div>${unreadN()?'<button class="ghost" data-a="readall">Mark all as read</button>':""}<h3 style="margin:1.2rem 0 .4rem">Notification settings</h3>${chk("outbid","Tell me when someone outbids me")}${chk("won","Tell me when I win an auction")}${chk("sold","Tell me when my item sells")}${devicePart()}</div></div>`}
+let nSeen=null;
+const devicePart=()=>("serviceWorker" in navigator&&"PushManager" in window)?`<p class="mute" style="margin:.8rem 0 .3rem">Alerts on this device also work when the site is closed.</p><button data-a="pushtoggle">${S.pushOn?"Turn off device alerts":"Turn on device alerts"}</button>`:`<p class="mute">This browser does not support notifications.</p>`;
+const b64u=s=>{const r=atob((s+"=".repeat((4-s.length%4)%4)).replace(/-/g,"+").replace(/_/g,"/"));return Uint8Array.from([...r].map(c=>c.charCodeAt(0)))};
+async function pushOn(){if(!("serviceWorker" in navigator&&"PushManager" in window))throw new Error("This browser does not support notifications.");
+ if(await Notification.requestPermission()!=="granted")throw new Error("Notifications are blocked in your browser settings.");
+ const reg=await navigator.serviceWorker.register("/sw.js");await navigator.serviceWorker.ready;
+ const sub=(await reg.pushManager.getSubscription())||await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64u(CFG.vapid)});
+ await api("/push/subscribe","POST",sub.toJSON());S.pushOn=true}
+async function pushOff(){const reg=await navigator.serviceWorker.getRegistration(),sub=reg&&await reg.pushManager.getSubscription();if(sub){await api("/push/unsubscribe","POST",{endpoint:sub.endpoint});await sub.unsubscribe()}S.pushOn=false}
+let fbHandle="";
+const waLink=(ph,o)=>"https://wa.me/"+String(ph||"").replace(/\D/g,"")+"?text="+encodeURIComponent(S.lang==="he"?`היי, אני פונה לגבי "${o.title}" ב-Holo Bid`:`Hi, I'm contacting you about "${o.title}" on Holo Bid`);
+const fbPage=h=>/^\d+$/.test(h)?"https://www.facebook.com/profile.php?id="+h:"https://www.facebook.com/"+encodeURIComponent(h);
+function contactHTML(o,buy){const c=o.other||(typeof fakeContact==="function"?fakeContact(buy?o.seller:o.buyer):null);if(!c)return"";
+ return `<div style="margin:.6rem 0"><b>Contact details</b>${o.other?"":' <span class="mute">(demo)</span>'}<div class="mute">Phone: <bdi dir="ltr">${esc(c.phone||"")}</bdi></div>${c.fb?`<div class="mute">Facebook: <bdi dir="ltr">${esc(c.fb)}</bdi></div>`:""}<div class="row" style="justify-content:flex-start;flex-wrap:wrap;gap:.5rem;margin-top:.4rem">${c.phone?`<a class="btn" href="${waLink(c.phone,o)}" target="_blank" rel="noopener">WhatsApp</a>`:""}${c.fb?`<a class="btn" href="https://m.me/${encodeURIComponent(c.fb)}" target="_blank" rel="noopener">Messenger</a><a class="btn" href="${fbPage(c.fb)}" target="_blank" rel="noopener">Facebook profile</a>`:""}</div></div>`}
+let query="",hquery="",ended=false;
+const norm=s=>String(s||"").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g,"");
+const matches=(q,parts)=>{const hay=norm(parts.join(" "));return norm(q).split(/\s+/).filter(Boolean).every(t=>hay.includes(t))};
+const hayA=a=>[a.title,a.set,a.cond,a.city,(typeof CITY!=="undefined"&&CITY[a.city])||"",a.info,a.type==="card"?"card cards קלף קלפים":"booster pack packs בוסטר חבילה חבילות"];
+function liveResults(){const q=query.trim(),base=S.auctions.filter(a=>!a.closed&&(tab==="all"||a.type===tab)),l=(q?base.filter(a=>matches(q,hayA(a))):base).sort((x,y)=>x.end-y.end);
+ let extra="";if(q&&tab!=="all"){const o=S.auctions.filter(a=>!a.closed&&a.type!==tab&&matches(q,hayA(a))).length;if(o)extra=`<p class="mute">${o} more in ${tab==="card"?"Booster packs":"Cards"}. <button class="ghost" data-a="tab" data-t="all">Show all</button></p>`}
+ return (q?`<p class="mute">${l.length} result${l.length===1?"":"s"}</p>`:"")+`<div class="grid">${l.map(cardHTML).join("")||(q?'<p class="mute">No auctions match your search.</p>':'<p class="mute">No live auctions in this category. Check back soon.</p>')}</div>`+extra+endedHTML(q)}
+function endedHTML(q){if(!ended)return"";const r=S.past.filter(p=>(tab==="all"||p.type===tab)&&(!q||matches(q,[p.title,p.set]))),rows=r.map(p=>`<tr><td>${esc(p.title)}<div class="mute">${esc(p.set)}</div></td><td><b>${p.price?fmt(p.price):"Unsold"}</b></td><td>${p.bids}</td><td>${p.date}</td></tr>`).join("");
+ return `<h2 style="margin:1.6rem 0 .6rem">Ended auctions</h2>`+(rows?`<table><tr><th>Item</th><th>Closing price</th><th>Bids</th><th>Closed</th></tr>${rows}</table>`:'<p class="mute">No ended auctions match.</p>')}
+function histTable(){const t=view==="hist:cards"?"card":"booster",rows=S.past.filter(p=>p.type===t&&(!hquery.trim()||matches(hquery,[p.title,p.set]))).map(p=>`<tr><td>${esc(p.title)}<div class="mute">${esc(p.set)}</div></td><td><b>${p.price?fmt(p.price):"Unsold"}</b></td><td>${p.bids}</td><td>${p.date}</td></tr>`).join("");
+ return rows?`<table><tr><th>Item</th><th>Closing price</th><th>Bids</th><th>Closed</th></tr>${rows}</table>`:'<p class="mute">No auctions match your search.</p>'}
+const profListings=()=>(S.myListings||[]);
+const profWon=()=>S.orders.filter(o=>o.role==="buyer").map(o=>({title:o.title,price:o.price,status:o.status,img:"/api/img/"+o.aid+"/0"}));
+const profLeading=()=>S.auctions.filter(a=>a.lead&&!a.closed&&a.end>now());
+let pedit=null,pPhone="",pSent=false;
+const LST={live:"Active",sold:"Sold",unsold:"Unsold",cancelled:"Cancelled"};
+function prow(img,title,sub,right,attr){return `<div class="panel prow" ${attr||""} style="display:flex;gap:.7rem;align-items:center;margin:0 0 .5rem;padding:.6rem;${attr?"cursor:pointer":""}">${img?`<img src="${img}" alt="" style="width:52px;height:52px;object-fit:cover;border-radius:8px">`:'<div style="width:52px;height:52px;border-radius:8px;background:var(--bg)"></div>'}<div style="flex:1;min-width:0"><b>${esc(title)}</b><div class="mute">${sub}</div></div><div style="text-align:end">${right}</div></div>`}
+function profile(){
+ const u=S.user,ph=u.phone||"",fb=u.fbh||"",L=profListings(),W=profWon(),G=profLeading();
+ const phoneBox=pedit==="phone"?`<div style="display:grid;gap:.6rem;margin:.6rem 0"><label>New mobile number<input id="pph" inputmode="tel" value="${esc(pPhone)}" placeholder="050 123 4567"></label><button class="ghost" data-a="psms">Send code</button>${devCode?`<p class="note">Dev code: ${devCode}</p>`:""}${pSent?`<label>Code<input id="pcode" inputmode="numeric" maxlength="6" placeholder="123456"></label><button data-a="pverify">Verify and save</button>`:""}<button class="ghost" data-a="pcancel">Cancel</button></div>`:`<div class="row" style="margin:.4rem 0"><span class="mute">Phone: <bdi dir="ltr">${esc(ph)||"-"}</bdi></span><button class="ghost" data-a="pedit" data-k="phone">Edit</button></div>`;
+ const fbBox=pedit==="fb"?`<div style="display:grid;gap:.6rem;margin:.6rem 0"><label>Facebook profile link or username<input id="pfbi" value="${esc(fb)}" placeholder="facebook.com/your.name"></label><div class="row" style="justify-content:flex-start;gap:.5rem"><button data-a="pfb">Save</button><button class="ghost" data-a="pcancel">Cancel</button></div></div>`:`<div class="row" style="margin:.4rem 0"><span class="mute">Facebook: <bdi dir="ltr">${esc(fb)||"-"}</bdi></span><button class="ghost" data-a="pedit" data-k="fb">Edit</button></div>`;
+ const lead=G.map(a=>prow(a.imgs&&a.imgs[0],a.title,`<span data-end="${a.end}">${left(a.end-now())}</span>`,`<b>${fmt(cur(a))}</b>`,`data-a="open" data-id="${a.id}"`)).join("");
+ const pub=L.map(l=>prow(l.img,l.title,l.status==="live"?`<span data-end="${l.end}">${left(l.end-now())}</span>`:`<span class="tag ${l.status==="sold"?"ok":""}">${LST[l.status]}</span>`,`<b>${l.price?fmt(l.price):""}</b><div class="mute">${l.bids} bid${l.bids===1?"":"s"}</div>`,l.status==="live"?`data-a="open" data-id="${l.id}"`:l.status==="sold"?`data-a="nav" data-v="orders"`:"")).join("");
+ const won=W.map(o=>prow(o.img,o.title,`<span class="tag ${o.status==="completed"?"ok":""}">${STAT[o.status]||o.status}</span>`,`<b>${fmt(o.price)}</b>`,`data-a="nav" data-v="orders"`)).join("");
+ return `<div class="row" style="justify-content:flex-start;gap:1rem;margin-bottom:1rem"><div class="avatar">${esc([...String(u.name||"?")][0]||"?")}</div><h1>${esc(u.name)}</h1></div>
+<div class="panel"><h2>Contact details</h2><p class="mute">Shared with the other person after an auction.</p>${phoneBox}${fbBox}</div>
+<h2 style="margin:1.4rem 0 .6rem">My auctions</h2>
+${G.length?`<h3 style="margin:1rem 0 .5rem">Leading now</h3>${lead}`:""}
+<h3 style="margin:1rem 0 .5rem">Published by me</h3>${pub||'<p class="mute">You have not published any auctions yet.</p>'}
+<h3 style="margin:1rem 0 .5rem">Won by me</h3>${won||'<p class="mute">You have not won any auctions yet.</p>'}
+<div class="panel" style="margin-top:1.4rem"><h2>Account</h2><button class="danger" data-a="delask">Delete my account</button><p class="mute" style="margin-top:1rem"><a href="/privacy" target="_blank">Privacy policy</a> · <a href="/terms" target="_blank">Terms of Service</a> · <a href="/data-deletion" target="_blank">Data deletion</a></p></div>`}
+function modalHTML(){
+ if(!modal)return"";
+ if(modal.k==="delete")return `<div class="modal" data-a="close"><div class="sheet" data-stop><h2>Delete account?</h2><p>This erases your name, phone number, Facebook contact and notifications. Auction and order records stay without your identity. This cannot be undone.</p><div class="row"><button class="ghost" data-a="close">Cancel</button><button class="danger" data-a="delgo">Yes, delete my account</button></div></div></div>`;
+if(modal.k==="notifs")return notifHTML();
+const a=S.auctions.find(x=>x.id===modal.id);if(!a){modal=null;return""}
+ if(modal.k==="hist")return `<div class="modal" data-a="close"><div class="sheet" data-stop><div class="row"><h2>Bid history</h2><button class="ghost" data-a="close">Close</button></div><p class="mute">${esc(a.title)}</p><table><tr><th>Bidder</th><th>Amount</th><th>Time</th></tr>${a.bids.slice().reverse().map(b=>`<tr><td>${esc(mask(b.u))}</td><td>${fmt(b.a)}</td><td>${new Date(b.t).toLocaleString()}</td></tr>`).join("")||'<tr><td colspan="3" class="mute">No bids yet. Be the first.</td></tr>'}</table></div></div>`;
+ const open=a.end>now();
+ return `<div class="modal" data-a="close"><div class="sheet" data-stop><div class="row"><h2>${esc(a.title)}</h2><button class="ghost" data-a="close">Close</button></div><div class="art" style="--h:${(a.id*53)%360};border-radius:12px;margin:.8rem 0;overflow:hidden${a.imgs&&a.imgs[0]?";aspect-ratio:auto;background:#0b0f1d":""}">${a.imgs&&a.imgs[0]?`<img src="${a.imgs[0]}" alt="" data-a="zoom" title="Full size" style="display:block;width:100%;height:auto;max-height:70vh;object-fit:contain;cursor:zoom-in">`:`<b>${a.type==="card"?"★":"▣"}</b>`}<small>${esc(a.set)}</small><span class="t" data-end="${a.end}">${left(a.end-now())}</span></div><p class="mute">${esc(a.set)}. ${esc(a.cond)}.</p><div class="row"><span class="price">${fmt(cur(a))}</span><span class="ship">${shipTxt(a)}</span></div><p class="mute" style="margin:.4rem 0">Item location: <b>${esc(a.city||"")}</b></p>${infoHTML(a)}${open?(modal.k==="confirm"?`<div class="note" style="margin:.8rem 0"><b>This bid is legally binding.</b> If you win, you must pay ${fmt(modal.amt)}${a.by==="buyer"?(modal.pickup?` (self pickup in ${esc(a.city||"")}, no shipping fee)`:` + ${fmt(a.ship)} shipping = <b>${fmt(modal.amt+a.ship)}</b>`):" (the seller pays shipping)"} within 24 hours.</div><div class="row"><button class="ghost" data-a="back" data-id="${a.id}">Change bid</button><button data-a="confirm" data-id="${a.id}">Confirm binding bid</button></div>`:`<p></p><label>Your bid (minimum ${fmt(minBid(a))})<input id="amt" type="number" inputmode="numeric" min="${minBid(a)}" value="${minBid(a)}"></label>${a.by==="both"?`<fieldset><legend>How do you want to receive it?</legend><label style="display:flex;gap:.5rem;align-items:center"><input type="radio" name="rcv" value="ship" ${modal.pickup?"":"checked"}> Shipping (+${fmt(a.ship)})</label><label style="display:flex;gap:.5rem;align-items:center"><input type="radio" name="rcv" value="pickup" ${modal.pickup?"checked":""}> Self pickup in ${esc(a.city||"")} (no shipping fee)</label></fieldset>`:`<p class="mute">Self pickup only. No shipping.</p>`}<div class="row"><button class="ghost" data-a="hist" data-id="${a.id}">Bid history (${a.bids.length})</button><button data-a="review" data-id="${a.id}">Place bid</button></div>`):`<p class="note">This auction has closed.</p><button class="ghost" data-a="hist" data-id="${a.id}">Bid history</button>`}</div></div>`;
+}
+function render0(){
+ if(step()<4){$("#app").innerHTML=`<main><button class="ghost" data-a="lang">${S.lang==="he"?"English":"עברית"}</button><button class="ghost" data-a="theme">${isDark()?"Light":"Dark"}</button>${onboarding()}</main>`;return}
+ const v=view;
+ const body=v==="live"?live():v==="admin"&&S.user.admin?admin():v==="sell"?sell():v==="orders"?orders():v==="profile"?profile():hist();
+ $("#app").innerHTML=`<header><div class="logo"><i></i>Holo Bid</div><nav><button class="${v==="live"?"on":""}" data-a="nav" data-v="live">Live</button><button class="${v.startsWith("hist")?"on":""}" data-a="menu" aria-expanded="${menu}">History ▾</button>${menu?`<div class="menu"><button data-a="nav" data-v="hist:cards">Past card auctions</button><button data-a="nav" data-v="hist:boosters">Past booster pack auctions</button><button data-a="nav" data-v="hist:mine">My history</button></div>`:""}<button class="${v==="orders"?"on":""}" data-a="nav" data-v="orders">My orders</button><button class="${v==="profile"?"on":""}" data-a="nav" data-v="profile">Profile</button><button class="${v==="sell"?"on":""}" data-a="nav" data-v="sell">Create auction</button>${S.user.admin?`<button class="${v==="admin"?"on":""}" data-a="nav" data-v="admin">Admin</button>`:""}<button class="ghost" data-a="lang">${S.lang==="he"?"English":"עברית"}</button><button class="ghost" data-a="theme">${isDark()?"Light":"Dark"}</button><button class="ghost" data-a="bell" aria-label="Notifications" style="position:relative"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>${unreadN()?`<span class="badge">${unreadN()}</span>`:""}</button><button class="ghost" data-a="logout">Log out</button></nav></header><main>${S.user.blocked?'<p class="note">Your account is blocked. You can browse but not bid.</p>':""}${body}</main>${modalHTML()}${zoomSrc?`<div class="lightbox" data-a="unzoom"><span class="lx">×</span><img src="${zoomSrc}" alt=""></div>`:""}`;
+}
+document.addEventListener("click",async e=>{
+ const el=e.target.closest("[data-a]");
+ if(!el){if(menu){menu=false;render()}return}
+ if(el.classList.contains("modal")&&e.target.closest("[data-stop]"))return;
+ const a=el.dataset.a,id=+el.dataset.id;
+ try{
+ if(a==="fb"){await fbLogin()}
+ else if(a==="sms"){phone=$("#ph").value.trim();const r=await api("/auth/phone/start","POST",{phone});devCode=r.devCode||"";toast("Code sent.")}
+ else if(a==="otp"){phone=$("#ph").value.trim();await api("/auth/phone/verify","POST",{code:$("#otp").value.trim()});devCode="";await load()}
+ else if(a==="tos"){await api("/auth/tos","POST");await load()}
+ else if(a==="logout"){TOKEN=null;try{localStorage.removeItem("hb-token")}catch(x){}S.user=null;view="live";modal=null}
+ else if(a==="zoom"){zoomSrc=el.src}
+ else if(a==="unzoom"){zoomSrc=""}
+ else if(a==="pic"){const m=$(".modal .art img");if(m)m.src=el.src;return}
+ else if(a==="nav"){view=el.dataset.v;menu=false;hquery="";pedit=null;pSent=false}
+ else if(a==="menu"){menu=!menu}
+ else if(a==="tab"){tab=el.dataset.t}
+ else if(a==="open"){modal={k:"bid",id}}
+ else if(a==="hist"){modal={k:"hist",id}}
+ else if(a==="close"){if(e.target!==el&&!el.classList.contains("ghost"))return;modal=null}
+ else if(a==="back"){modal={k:"bid",id,pickup:modal&&modal.pickup}}
+ else if(a==="review"||a==="confirm"){if(a==="review"){const au=S.auctions.find(x=>x.id===id),v=Math.floor(+$("#amt").value);if(S.user.blocked)return toast("Blocked accounts cannot bid.");if(au.mine)return toast("You cannot bid on your own listing.");if(!(v>=minBid(au)))return toast("Bid must be at least "+fmt(minBid(au))+".");const rc=document.querySelector("input[name=rcv]:checked");modal={k:"confirm",id,amt:v,pickup:!!(rc&&rc.value==="pickup")}}
+ {const r=await api("/auctions/"+id+"/bids","POST",{amount:modal.amt,pickup:!!modal.pickup});toast(r.ext?"Bid placed. Auction extended by 2 minutes.":"Bid placed: "+fmt(modal.amt));modal=null;await load()}}
+ else if(a==="ord"){await api("/orders/"+id+"/"+el.dataset.op,"POST");await load()}
+ else if(a==="bell"){modal={k:"notifs"}}
+ else if(a==="pref"){S.prefs[el.dataset.k]=el.checked;await api("/prefs","POST",{outbid:S.prefs.outbid,won:S.prefs.won,sold:S.prefs.sold,lang:S.lang})}
+ else if(a==="readall"){await api("/notifications/read","POST");await load()}
+ else if(a==="notif"){const n=S.notifs.find(x=>x.id===id);if(n&&n.type!=="outbid"){modal=null;view="orders"}else if(n&&S.auctions.some(x=>x.id===n.aid)){modal={k:"bid",id:n.aid}}else modal=null}
+ else if(a==="pushtoggle"){if(S.pushOn)await pushOff();else await pushOn();toast(S.pushOn?"Device alerts are on.":"Device alerts are off.")}
+ else if(a==="fbskip"){await api("/auth/fb-contact","POST",{skip:true});await load()}
+ else if(a==="fbc"){await api("/auth/fb-contact","POST",{link:$("#fbl").value});await load()}
+ else if(a==="ended"){ended=!ended}
+ else if(a==="qclear"){query="";const x=$("#q");if(x)x.focus()}
+ else if(a==="hclear"){hquery=""}
+ else if(a==="pedit"){pedit=el.dataset.k;pPhone="";pSent=false;devCode=""}
+ else if(a==="pcancel"){pedit=null;pSent=false;devCode=""}
+ else if(a==="psms"){pPhone=$("#pph").value.trim();const rr=await api("/auth/phone/start","POST",{phone:pPhone});devCode=rr.devCode||"";pSent=true;toast("Code sent.")}
+ else if(a==="pverify"){await api("/auth/phone/verify","POST",{code:$("#pcode").value.trim()});pedit=null;pSent=false;devCode="";await load();toast("Phone number updated.")}
+ else if(a==="pfb"){await api("/auth/fb-contact","POST",{link:$("#pfbi").value});pedit=null;await load();toast("Facebook contact updated.")}
+ else if(a==="delask"){modal={k:"delete"}}
+ else if(a==="delgo"){await api("/account/delete","POST");TOKEN=null;try{localStorage.removeItem("hb-token")}catch(x){}S.user=null;view="live";modal=null;toast("Your account was deleted.")}
+ else if(a==="theme"){const t=isDark()?"light":"dark";applyTheme(t);try{localStorage.setItem("hb-theme",t)}catch(x){}}
+ else if(a==="lang"){S.lang=S.lang==="he"?"en":"he";save();if(TOKEN)api("/prefs","POST",{lang:S.lang}).catch(()=>{})}
+ else if(a==="rmpic"){readForm();draft.imgs.splice(+el.dataset.i,1)}
+ else if(a==="publish"){readForm();const d=draft;if(!$("#f_bind").checked)return toast("Confirm that the listing is binding.");await api("/auctions","POST",{type:d.type,title:d.title,set:d.set,city:d.city,cond:d.cond,info:d.info,start:d.start,ship:d.ship,by:d.by,hours:+d.days,ref:d.ref,imgs:d.imgs});tab=d.type;draft=fresh();view="live";toast("Auction published. Your listing is now binding.");await load()}
+ else if(a==="block"||a==="dismiss"){const n=$("#n"+id).value.trim();if(!n)return toast("Add a resolution note first.");await api("/admin/cases/"+id,"POST",{action:a,note:n});await load()}
+ }catch(err){if(err.status===401&&TOKEN){TOKEN=null;S.user=null;modal=null;try{localStorage.removeItem("hb-token")}catch(x){}}toast(err.message);if(a==="confirm"||a==="review"){modal={k:"bid",id};await load()}}
+ render();
+});
+document.addEventListener("input",e=>{
+ if(e.target.id==="q"){query=e.target.value;const x=$("#results");if(x){x.innerHTML=liveResults();trNode(x)}const b=$("[data-a=qclear]");if(b)b.hidden=!query}
+ else if(e.target.id==="hq"){hquery=e.target.value;const x=$("#hres");if(x){x.innerHTML=histTable();trNode(x)}const b=$("[data-a=hclear]");if(b)b.hidden=!hquery}
+});
+document.addEventListener("change",async e=>{if(e.target.id==="tos")$("#tosb").disabled=!e.target.checked;if(e.target.name==="by"){readForm();render();return}if(e.target.id==="pics"){readForm();const fs=[...e.target.files].slice(0,10-draft.imgs.length);for(const f of fs){try{draft.imgs.push(await shrink(f))}catch(x){toast("Could not read "+f.name)}}render()}});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){if(zoomSrc){zoomSrc="";render()}else if(modal){modal=null;render()}}if(e.key==="Enter"&&e.target.matches(".card")){e.target.click()}});
+let lastLoad=0,wt;
+setInterval(()=>{document.querySelectorAll("[data-end]").forEach(n=>n.textContent=left(+n.dataset.end-now()));document.querySelectorAll("[data-due]").forEach(n=>{const x=+n.dataset.due-now();n.textContent=x>0?left(x):S.lang==="he"?"באיחור":"Overdue"});if(TOKEN&&S.auctions.some(a=>a.end<=now())&&Date.now()-lastLoad>3000){lastLoad=Date.now();load()}},1000);
+function connect(){try{const ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws");ws.onmessage=()=>{clearTimeout(wt);wt=setTimeout(()=>TOKEN&&load(),300)};ws.onclose=()=>setTimeout(connect,3000)}catch(e){}}
+async function init(){try{CFG=await api("/config")}catch(e){}
+ if(CFG.googleClientId){const gs=document.createElement("script");gs.src="https://accounts.google.com/gsi/client";gs.async=true;gs.onload=()=>{gInit();render()};document.head.appendChild(gs)}
+ if(TOKEN)await load();try{const reg=await navigator.serviceWorker.getRegistration();S.pushOn=!!(reg&&await reg.pushManager.getSubscription())}catch(e){}render();connect();setInterval(()=>TOKEN&&load(),20000)}
+init();
+</script>
+</body>
+</html>

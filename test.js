@@ -6,7 +6,7 @@ let base;
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 const call = async (tok, m, p, b) => { const r = await fetch(base + p, { method: m, headers: { 'Content-Type': 'application/json', ...(tok ? { Authorization: 'Bearer ' + tok } : {}) }, body: b ? JSON.stringify(b) : undefined }); let j = {}; try { j = await r.json(); } catch {} return { s: r.status, j }; };
 async function signup(name, phone) {
-  const t = (await call(null, 'POST', '/api/auth/facebook', { dev: name })).j.token;
+  const t = (await call(null, 'POST', '/api/auth/google', { dev: name })).j.token;
   const s = await call(t, 'POST', '/api/auth/phone/start', { phone });
   assert.equal(s.s, 200); assert.ok(s.j.devCode);
   assert.equal((await call(t, 'POST', '/api/auth/phone/verify', { code: s.j.devCode })).s, 200);
@@ -20,7 +20,7 @@ test.after(() => { server.close(); setTimeout(() => process.exit(0), 100); });
 
 test('full flow', async () => {
   // onboarding gates
-  const raw = (await call(null, 'POST', '/api/auth/facebook', { dev: 'Gate' })).j.token;
+  const raw = (await call(null, 'POST', '/api/auth/google', { dev: 'Gate' })).j.token;
   assert.equal((await call(raw, 'POST', '/api/auctions', listing())).s, 403, 'cannot list before verification');
   assert.equal((await call(raw, 'POST', '/api/auth/tos')).s, 403, 'tos needs phone first');
   assert.equal((await call(null, 'GET', '/api/state')).s, 401);
@@ -29,7 +29,7 @@ test('full flow', async () => {
   assert.equal((await call(raw, 'POST', '/api/auth/phone/start', { phone: '0501112222' })).s, 429, 'otp throttled');
 
   const seller = await signup('Seller S', '0501110001'), a = await signup('Alice A', '0501110002'), b = await signup('Bob B', '0501110003'), owner = await signup('Owner', '0501110004');
-  const dup = (await call(null, 'POST', '/api/auth/facebook', { dev: 'Clone' })).j.token;
+  const dup = (await call(null, 'POST', '/api/auth/google', { dev: 'Clone' })).j.token;
   assert.equal((await call(dup, 'POST', '/api/auth/phone/start', { phone: '0501110002' })).s, 409, 'phone unique');
 
   // listing validation
@@ -180,7 +180,7 @@ test('shipping modes, contact details and facebook link parsing', async () => {
   await ok('https://www.facebook.com/profile.php?id=100012345678901', '100012345678901'); await ok('@dana.levi', 'dana.levi'); await ok('https://m.me/dana.levi', 'dana.levi'); await ok('dana.levi', 'dana.levi');
   for (const bad of ['', 'abc', 'https://example.com/dana.levi', 'https://www.facebook.com/groups/123456', 'a b c d e f', '<script>alert(1)</script>']) assert.equal((await call(x, 'POST', '/api/auth/fb-contact', { link: bad })).s, 400, 'rejects ' + bad);
   // sign-up gates: no Facebook contact or old ToS version -> cannot bid
-  const nofb = (await call(null, 'POST', '/api/auth/facebook', { dev: 'No Fb' })).j.token; const c = await call(nofb, 'POST', '/api/auth/phone/start', { phone: '0501117009' });
+  const nofb = (await call(null, 'POST', '/api/auth/google', { dev: 'No Fb' })).j.token; const c = await call(nofb, 'POST', '/api/auth/phone/start', { phone: '0501117009' });
   await call(nofb, 'POST', '/api/auth/phone/verify', { code: c.j.devCode });
   assert.equal((await call(nofb, 'POST', '/api/auth/tos')).s, 403, 'tos needs the facebook contact first');
   db.prepare("UPDATE users SET tos_version='1.0' WHERE id=(SELECT id FROM users WHERE name='C Stranger')").run();
@@ -245,29 +245,40 @@ test('profile data, phone change, account deletion and legal pages', async () =>
   assert.equal(db.prepare('SELECT COUNT(*) c FROM bids WHERE bidder_id=?').get(row.id).c >= 1, true, 'bid records stay');
   assert.equal((await call(s, 'GET', '/api/state')).j.orders.find(x => x.title === 'Sold one').other.phone, null, 'the seller no longer sees a deleted number');
   assert.equal((await call(o, 'POST', '/api/account/delete')).s, 200, 'uninvolved user can delete');
-  const again = await call(null, 'POST', '/api/auth/facebook', { dev: 'P Other' }); assert.equal(again.s, 200); assert.equal(again.j.user.phone_verified, false, 'signing in again starts a fresh account');
+  const again = await call(null, 'POST', '/api/auth/google', { dev: 'P Other' }); assert.equal(again.s, 200); assert.equal(again.j.user.phone_verified, false, 'signing in again starts a fresh account');
 });
 
-test('facebook login checks tokens against our own app', async () => {
-  const realFetch = globalThis.fetch; let appIdOfToken = '111';
+test('google sign-in checks tokens against our own client id, and admin is by verified email', async () => {
+  const realFetch = globalThis.fetch; let aud = 'cid-1', verified = 'true', exp = Math.floor(Date.now() / 1000) + 600, iss = 'https://accounts.google.com';
   globalThis.fetch = async (u, o) => {
     const s = String(u);
-    if (!s.startsWith('https://graph.facebook.com/')) return realFetch(u, o);
-    const url = new URL(s), tok = url.searchParams.get('access_token') || url.searchParams.get('input_token');
-    const json = j => new Response(JSON.stringify(j), { headers: { 'Content-Type': 'application/json' } });
-    if (url.pathname === '/me') return tok === 'GOOD' ? json({ id: 'FB777', name: 'Real Person' }) : json({ error: { message: 'bad' } });
-    if (url.pathname === '/debug_token') return json({ data: { is_valid: true, app_id: appIdOfToken } });
-    return json({});
+    if (!s.startsWith('https://oauth2.googleapis.com/tokeninfo')) return realFetch(u, o);
+    const tok = new URL(s).searchParams.get('id_token');
+    const json = (j, st = 200) => new Response(JSON.stringify(j), { status: st, headers: { 'Content-Type': 'application/json' } });
+    if (tok === 'GOOD') return json({ sub: 'G777', aud, iss, exp: String(exp), email: 'Real.Person@Example.com', email_verified: verified, name: 'Real Person' });
+    return json({ error: 'invalid_token' }, 400);
   };
   try {
-    const post = b => call(null, 'POST', '/api/auth/facebook', b);
-    delete process.env.FB_APP_ID; delete process.env.FB_APP_SECRET;
-    assert.equal((await post({ accessToken: 'GOOD' })).s, 401, 'not configured: refuse every token');
-    process.env.FB_APP_ID = '111'; process.env.FB_APP_SECRET = 'secret';
-    const ok = await post({ accessToken: 'GOOD' }); assert.equal(ok.s, 200); assert.equal(ok.j.user.name, 'Real Person');
-    assert.equal(db.prepare("SELECT fb_id FROM users WHERE name='Real Person'").get().fb_id, 'FB777');
-    assert.equal((await post({ accessToken: 'BAD' })).s, 401, 'invalid token');
-    appIdOfToken = '222'; assert.equal((await post({ accessToken: 'GOOD' })).s, 401, 'token issued to a different app');
+    const post = b => call(null, 'POST', '/api/auth/google', b);
+    delete process.env.GOOGLE_CLIENT_ID;
+    assert.equal((await post({ credential: 'GOOD' })).s, 401, 'not configured: refuse every token');
+    process.env.GOOGLE_CLIENT_ID = 'cid-1';
+    const ok = await post({ credential: 'GOOD' }); assert.equal(ok.s, 200); assert.equal(ok.j.user.name, 'Real Person');
+    const row = db.prepare("SELECT fb_id, email FROM users WHERE name='Real Person'").get();
+    assert.equal(row.fb_id, 'g:G777'); assert.equal(row.email, 'real.person@example.com');
+    assert.equal(ok.j.user.admin, false, 'not admin by default');
+    assert.equal((await post({ credential: 'BAD' })).s, 401, 'invalid token');
     assert.equal((await post({})).s, 401, 'no token');
-  } finally { globalThis.fetch = realFetch; delete process.env.FB_APP_ID; delete process.env.FB_APP_SECRET; }
+    aud = 'someone-elses-client'; assert.equal((await post({ credential: 'GOOD' })).s, 401, 'token issued to a different client id'); aud = 'cid-1';
+    verified = 'false'; assert.equal((await post({ credential: 'GOOD' })).s, 401, 'unverified email'); verified = 'true';
+    exp = Math.floor(Date.now() / 1000) - 5; assert.equal((await post({ credential: 'GOOD' })).s, 401, 'expired'); exp = Math.floor(Date.now() / 1000) + 600;
+    iss = 'https://evil.example'; assert.equal((await post({ credential: 'GOOD' })).s, 401, 'wrong issuer'); iss = 'https://accounts.google.com';
+    // admin by verified email
+    process.env.ADMIN_EMAILS = 'real.person@example.com';
+    assert.equal((await post({ credential: 'GOOD' })).j.user.admin, true, 'admin by email (case-insensitive)');
+    process.env.ADMIN_EMAILS = '';
+    // skipping the optional Facebook contact
+    const tk = ok.j.token; await call(tk, 'POST', '/api/auth/phone/start', { phone: '0509991111' });
+    assert.equal((await call(tk, 'POST', '/api/auth/fb-contact', { skip: true })).s, 403, 'phone first');
+  } finally { globalThis.fetch = realFetch; delete process.env.GOOGLE_CLIENT_ID; delete process.env.ADMIN_EMAILS; }
 });
