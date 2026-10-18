@@ -408,15 +408,20 @@ app.post('/api/account/delete', auth, (req, res) => {
   res.json({ ok: true });
 });
 
-// Legal pages (templates in /public, with the contact email filled in from CONTACT_EMAIL)
+// Web files live either flat next to server.js (what the GitHub web upload produces) or in ./public. Flat layout serves only a fixed whitelist.
+const FLAT = fs.existsSync(path.join(__dirname, 'index.html'));
+const WEB = FLAT ? __dirname : path.join(__dirname, 'public');
+// Legal pages (templates, with the contact email filled in from CONTACT_EMAIL)
 for (const pg of ['privacy', 'terms', 'data-deletion']) {
   app.get('/' + pg, (req, res) => {
     try {
-      res.type('html').send(fs.readFileSync(path.join(__dirname, 'public', pg + '.html'), 'utf8').replace(/\{\{EMAIL\}\}/g, env.CONTACT_EMAIL || 'contact@example.com').replace(/\{\{SITE\}\}/g, env.SITE_NAME || 'Holo Bid'));
+      res.type('html').send(fs.readFileSync(path.join(WEB, pg + '.html'), 'utf8').replace(/\{\{EMAIL\}\}/g, env.CONTACT_EMAIL || 'contact@example.com').replace(/\{\{SITE\}\}/g, env.SITE_NAME || 'Holo Bid'));
     } catch { res.sendStatus(404); }
   });
 }
-app.use(express.static(path.join(__dirname, 'public')));
+if (FLAT) {
+  app.get(['/', '/index.html', '/sw.js', '/icon.svg', '/manifest.webmanifest'], (req, res) => res.sendFile(path.join(__dirname, req.path === '/' ? 'index.html' : req.path.slice(1))));
+} else app.use(express.static(WEB));
 app.use('/api', (req, res) => fail(res, 404, 'Not found'));
 
 const server = http.createServer(app);

@@ -66,3 +66,6 @@ Facebook sign-in is not used (Meta requires business verification for it). Users
 
 ## Tests
 `node test.js` (Node 22). In sandboxes that cannot build better-sqlite3, tests were run through a node:sqlite shim; run them once on a normal machine with the real package.
+
+## File layout
+All files sit together in the repository root (no subfolders needed). If an old `public/` folder is left over from earlier uploads it is ignored while `index.html` exists in the root, and can be deleted.
