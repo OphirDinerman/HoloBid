@@ -39,7 +39,7 @@ CREATE TRIGGER IF NOT EXISTS no_delete_auctions BEFORE DELETE ON auctions BEGIN 
 CREATE TRIGGER IF NOT EXISTS no_delete_bids BEFORE DELETE ON bids BEGIN SELECT RAISE(ABORT,'Bids cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS no_delete_images BEFORE DELETE ON images BEGIN SELECT RAISE(ABORT,'Photos cannot be deleted'); END;
 `);
-addCol('auctions', 'pickup_note', 'TEXT'); addCol('users', 'avatar_key', 'TEXT');
+addCol('auctions', 'pickup_note', 'TEXT'); addCol('auctions', 'kind', 'TEXT'); addCol('auctions', 'imported', 'INTEGER'); addCol('auctions', 'source', 'TEXT'); addCol('users', 'avatar_key', 'TEXT');
 addCol('users', 'email', 'TEXT'); addCol('users', 'home_city', 'TEXT'); addCol('users', 'notif_outbid', 'INTEGER DEFAULT 1'); addCol('users', 'notif_won', 'INTEGER DEFAULT 1'); addCol('users', 'notif_sold', 'INTEGER DEFAULT 1'); addCol('users', 'lang', "TEXT DEFAULT 'en'"); addCol('users', 'fb_handle', 'TEXT');
 
 const now = () => Date.now();
@@ -182,23 +182,24 @@ app.post('/api/auth/tos', auth, (req, res) => {
 });
 
 // ---------- Reading data ----------
+const fmtDate = ms => { const d = new Date(ms), y = d.getFullYear() !== new Date().getFullYear(); return d.toLocaleDateString('en-GB', y ? { day: '2-digit', month: 'short', year: 'numeric' } : { day: '2-digit', month: 'short' }); };
 function ser(a, uid) {
   const bids = db.prepare('SELECT b.amount, b.created, u.name FROM bids b JOIN users u ON u.id=b.bidder_id WHERE b.auction_id=? ORDER BY b.id DESC LIMIT 200').all(a.id)
     .reverse().map(b => ({ u: mask(b.name), a: b.amount, t: b.created }));
-  return { id: a.id, type: a.type, title: a.title, set: a.set_name, cond: a.cond, info: a.info, ship: a.ship_by === 'seller' ? 0 : a.ship_fee, by: a.ship_by === 'pickup' ? 'pickup' : 'both', city: a.city || '', pn: a.pickup_note || '', start: a.start_price, inc: a.inc, end: a.end_at, bids, imgs: Array.from({ length: a.img_count }, (_, i) => `/api/img/${a.id}/${i}`), mine: a.seller_id === uid, lead: a.leader_id === uid };
+  return { id: a.id, type: a.type, title: a.title, set: a.set_name, cond: a.cond, info: a.info, ship: a.ship_by === 'seller' ? 0 : a.ship_fee, by: a.ship_by === 'pickup' ? 'pickup' : 'both', city: a.city || '', pn: a.pickup_note || '', kind: a.kind === 'fixed' ? 'fixed' : 'auction', start: a.start_price, inc: a.inc, end: a.end_at, bids, imgs: Array.from({ length: a.img_count }, (_, i) => `/api/img/${a.id}/${i}`), mine: a.seller_id === uid, lead: a.leader_id === uid };
 }
 app.get('/api/state', auth, (req, res) => {
   const u = req.user;
   const out = {
     now: now(), user: pub(u),
     auctions: db.prepare("SELECT * FROM auctions WHERE status='live' ORDER BY end_at").all().map(a => ser(a, u.id)),
-    past: db.prepare("SELECT id,type,title,set_name,current_price,bid_count,end_at,(SELECT COUNT(*) FROM images i WHERE i.auction_id=auctions.id) n FROM auctions WHERE status='closed' ORDER BY end_at DESC LIMIT 100").all()
-      .map(a => ({ id: a.id, n: a.n, type: a.type, title: a.title, set: a.set_name, price: a.bid_count ? a.current_price : 0, bids: a.bid_count, date: new Date(a.end_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) })),
+    past: db.prepare("SELECT id,kind,imported,source,type,title,set_name,current_price,bid_count,end_at,(SELECT COUNT(*) FROM images i WHERE i.auction_id=auctions.id) n FROM auctions WHERE status='closed' AND bid_count>0 ORDER BY end_at DESC LIMIT 600").all()
+      .map(a => ({ id: a.id, kind: a.kind === 'fixed' ? 'fixed' : 'auction', n: a.n, type: a.type, title: a.title, set: a.set_name, price: a.bid_count ? a.current_price : 0, bids: a.bid_count, date: fmtDate(a.end_at), imported: !!a.imported, source: a.imported ? a.source || '' : '' })),
     myBids: db.prepare('SELECT a.title, b.amount amt, b.created t FROM bids b JOIN auctions a ON a.id=b.auction_id WHERE b.bidder_id=? ORDER BY b.id DESC LIMIT 100').all(u.id).reverse(),
     orders: db.prepare('SELECT o.*, a.title, a.city, bu.name bname, su.name sname, bu.phone bphone, bu.home_city bcity, bu.avatar_key bav, a.pickup_note pnote, su.phone sphone, su.home_city scity, su.avatar_key sav FROM orders o JOIN auctions a ON a.id=o.auction_id JOIN users bu ON bu.id=o.buyer_id JOIN users su ON su.id=o.seller_id WHERE o.buyer_id=? OR o.seller_id=? ORDER BY o.id DESC').all(u.id, u.id)
       .map(o => ({ id: o.id, aid: o.auction_id, title: o.title, buyer: o.bname, seller: o.sname, price: o.price, ship: o.ship_fee, by: o.ship_by === 'pickup' ? 'pickup' : 'both', pickup: !!o.pickup, other: o.buyer_id === u.id ? { name: o.sname, phone: o.sphone, city: o.scity, av: o.sav ? '/api/avatar/' + o.sav : null } : { name: o.bname, phone: o.bphone, city: o.bcity, av: o.bav ? '/api/avatar/' + o.bav : null }, city: o.city || '', pn: o.pnote || '', status: o.status, due: o.due_at, role: o.buyer_id === u.id ? 'buyer' : 'seller' })).reverse()
   };
-  out.myListings = db.prepare('SELECT a.id,a.type,a.title,a.status,a.current_price,a.bid_count,a.end_at,a.img_count,o.status ostatus FROM auctions a LEFT JOIN orders o ON o.auction_id=a.id WHERE a.seller_id=? ORDER BY a.id DESC LIMIT 100').all(u.id)
+  out.myListings = db.prepare('SELECT a.id,a.type,a.title,a.status,a.current_price,a.bid_count,a.end_at,a.img_count,o.status ostatus FROM auctions a LEFT JOIN orders o ON o.auction_id=a.id WHERE a.seller_id=? AND COALESCE(a.imported,0)=0 ORDER BY a.id DESC LIMIT 100').all(u.id)
     .map(a => ({ id: a.id, type: a.type, title: a.title, status: a.status === 'live' ? 'live' : a.status === 'cancelled' ? 'cancelled' : a.bid_count ? 'sold' : 'unsold', price: a.status === 'live' || a.bid_count ? a.current_price : 0, bids: a.bid_count, end: a.end_at, img: a.img_count ? `/api/img/${a.id}/0` : null, order: a.ostatus || null }));
   out.notifs = db.prepare('SELECT id,type,auction_id aid,title,amount,created t,read FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 50').all(u.id).map(n => ({ ...n, read: !!n.read }));
   out.prefs = { outbid: !!u.notif_outbid, won: !!u.notif_won, sold: !!u.notif_sold, lang: u.lang || 'en' };
@@ -206,6 +207,8 @@ app.get('/api/state', auth, (req, res) => {
     out.cases = db.prepare(`SELECT c.*, a.title, bu.name bname, su.name sname, ru.name rname, o.price, o.buyer_id FROM cases c JOIN orders o ON o.id=c.order_id JOIN auctions a ON a.id=o.auction_id
       JOIN users bu ON bu.id=o.buyer_id JOIN users su ON su.id=o.seller_id JOIN users ru ON ru.id=c.reported_id ORDER BY c.id DESC`).all()
       .map(c => ({ id: c.id, item: c.title, buyer: c.bname, seller: c.sname, amt: c.price, why: c.why, party: c.reported_id === c.buyer_id ? 'buyer' : 'seller', status: c.status === 'open' ? 'open' : c.status === 'blocked' ? 'blocked: ' + c.rname : 'dismissed', note: c.note }));
+    out.imports = db.prepare("SELECT id,kind,type,title,set_name,current_price,bid_count,end_at,source FROM auctions WHERE imported=1 AND status='closed' ORDER BY end_at DESC, id DESC LIMIT 500").all()
+      .map(a => ({ id: a.id, kind: a.kind === 'fixed' ? 'fixed' : 'auction', type: a.type, title: a.title, set: a.set_name, price: a.bid_count ? a.current_price : 0, bids: a.bid_count, date: fmtDate(a.end_at), source: a.source || '' }));
     out.blocked = db.prepare('SELECT name FROM users WHERE blocked=1').all().map(r => r.name);
   }
   res.json(out);
@@ -220,16 +223,18 @@ app.get('/api/img/:a/:i', (req, res) => {
 app.post('/api/auctions', auth, ready('Blocked accounts cannot list.'), (req, res) => {
   const b = req.body || {}, u = req.user;
   const title = String(b.title || '').trim().slice(0, 120), st = Math.floor(+b.start), sh = Math.floor(+b.ship), hrs = +b.hours;
+  const fixed = b.kind === 'fixed'; // regular sale at a set price instead of an auction
+  if (b.kind !== undefined && !['auction', 'fixed'].includes(b.kind)) return fail(res, 400, 'Pick a sale type.');
   if (title.length < 3) return fail(res, 400, 'Add a title.');
-  if (!(st >= 1 && st <= 1e6)) return fail(res, 400, 'Set a starting price.');
+  if (!(st >= 1 && st <= 1e6)) return fail(res, 400, fixed ? 'Set a price.' : 'Set a starting price.');
   const mode = ['pickup', 'both'].includes(b.by) ? b.by : null; // pickup only, or pickup + shipping at the seller's price
   if (!mode) return fail(res, 400, 'Choose how the buyer can get the item.');
   if (mode === 'both' && (b.ship === '' || b.ship == null || !(sh >= 0 && sh <= 1e4))) return fail(res, 400, 'Set the shipping cost (0 if free).');
   const city = String(b.city || '').trim().slice(0, 60);
   if (city.length < 2) return fail(res, 400, 'Enter the pickup city.');
   if (!['card', 'booster'].includes(b.type)) return fail(res, 400, 'Pick an item type.');
-  if (!(hrs >= 0.5 && hrs <= 168)) return fail(res, 400, 'Pick a duration.');
-  const incIn = b.inc === undefined || b.inc === '' || b.inc === null ? (st >= 500 ? 25 : 10) : Math.floor(+b.inc);
+  if (!(hrs >= 0.5 && hrs <= (fixed ? 720 : 168))) return fail(res, 400, 'Pick a duration.');
+  const incIn = fixed ? 1 : b.inc === undefined || b.inc === '' || b.inc === null ? (st >= 500 ? 25 : 10) : Math.floor(+b.inc);
   if (!(incIn >= 1 && incIn <= 100000)) return fail(res, 400, 'Set the minimum raise between bids (1 or more).');
   const imgs = Array.isArray(b.imgs) ? b.imgs.slice(0, 10) : [];
   if (imgs.length < 2) return fail(res, 400, 'Add at least 2 photos.');
@@ -249,7 +254,7 @@ app.post('/api/auctions', auth, ready('Blocked accounts cannot list.'), (req, re
     const r = db.prepare('INSERT INTO auctions(seller_id,type,title,set_name,cond,info,start_price,inc,ship_fee,ship_by,ref_price,end_at,current_price,img_count,created,city) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
       .run(u.id, b.type, title, String(b.set || '').trim().slice(0, 100) || 'Unknown set', String(b.cond || '').trim().slice(0, 60) || 'Not stated', String(b.info || '').trim().slice(0, 2000),
         st, incIn, mode === 'pickup' ? 0 : sh, mode, 0, t + hrs * 3600000, st, parsed.length, t, city);
-    db.prepare('UPDATE auctions SET pickup_note=? WHERE id=?').run(String(b.pickupNote || '').trim().replace(/\s+/g, ' ').slice(0, 120) || null, r.lastInsertRowid);
+    db.prepare('UPDATE auctions SET pickup_note=?, kind=? WHERE id=?').run(String(b.pickupNote || '').trim().replace(/\s+/g, ' ').slice(0, 120) || null, fixed ? 'fixed' : 'auction', r.lastInsertRowid);
     parsed.forEach((p, i) => db.prepare('INSERT INTO images VALUES(?,?,?,?)').run(r.lastInsertRowid, i, p.mime, p.buf));
     return r.lastInsertRowid;
   })();
@@ -260,6 +265,7 @@ app.post('/api/auctions', auth, ready('Blocked accounts cannot list.'), (req, re
 const placeBid = db.transaction((uid, aid, amount, pickup) => {
   const a = db.prepare('SELECT * FROM auctions WHERE id=?').get(aid), t = now();
   if (!a || a.status !== 'live' || a.end_at <= t) return { code: 409, err: 'Auction closed.' };
+  if (a.kind === 'fixed') return { code: 409, err: 'This item has a fixed price. Use Buy now.' };
   if (a.seller_id === uid) return { code: 403, err: 'You cannot bid on your own listing.' };
   const min = a.bid_count ? a.current_price + a.inc : a.start_price;
   if (!(amount >= min)) return { code: 409, err: `Bid must be at least ₪${min.toLocaleString('en-US')}.` };
@@ -278,6 +284,91 @@ app.post('/api/auctions/:id/bids', auth, ready('Blocked accounts cannot bid.'), 
   broadcast();
   deliver(r.notif);
   res.json({ ok: true, ext: r.ext });
+});
+
+// Regular sale: a binding purchase at the listed price. The first buyer wins, the listing closes at once and the usual order starts.
+const buyNow = db.transaction((uid, aid, pickup) => {
+  const a = db.prepare('SELECT * FROM auctions WHERE id=?').get(aid), t = now();
+  if (!a || a.kind !== 'fixed') return { code: 404, err: 'Not found.' };
+  if (a.status !== 'live' || a.end_at <= t || a.bid_count) return { code: 409, err: 'This item is no longer available.' };
+  if (a.seller_id === uid) return { code: 403, err: 'You cannot buy your own listing.' };
+  const pk = a.ship_by === 'pickup' || pickup ? 1 : 0;
+  db.prepare('INSERT INTO bids(auction_id,bidder_id,amount,created,pickup) VALUES(?,?,?,?,?)').run(aid, uid, a.start_price, t, pk);
+  db.prepare('UPDATE auctions SET current_price=?, leader_id=?, leader_pickup=?, bid_count=1, end_at=? WHERE id=?').run(a.start_price, uid, pk, t, aid);
+  return { ok: true };
+});
+app.post('/api/auctions/:id/buy', auth, ready('Blocked accounts cannot buy.'), limit(30, 60000), (req, res) => {
+  const r = buyNow(req.user.id, +req.params.id, !!(req.body || {}).pickup);
+  if (!r.ok) return fail(res, r.code, r.err);
+  sweep(); // closes the listing now, creates the order and sends the notifications
+  res.json({ ok: true });
+});
+
+// ---------- Admin: add reference history (ended auctions and sales collected from elsewhere) ----------
+// These rows are history only: no seller, buyer, order, bid or notification. They are labelled as external in the app.
+app.post('/api/admin/history', auth, adminOnly, limit(30, 3600000), (req, res) => {
+  const items = Array.isArray((req.body || {}).items) ? req.body.items : null;
+  if (!items || !items.length) return fail(res, 400, 'Nothing to add.');
+  if (items.length > 200) return fail(res, 400, 'Add at most 200 rows at a time.');
+  const rows = [];
+  for (let i = 0; i < items.length; i++) {
+    const x = items[i] || {}, at = 'Row ' + (i + 1) + ': ';
+    const title = String(x.title || '').trim().slice(0, 120);
+    if (title.length < 3) return fail(res, 400, at + 'add a title.');
+    if (!['card', 'booster'].includes(x.type)) return fail(res, 400, at + 'type must be card or booster.');
+    const kind = x.kind === 'fixed' ? 'fixed' : 'auction';
+    const price = Math.floor(+x.price);
+    if (!(price >= 1 && price <= 1e7)) return fail(res, 400, at + 'price must be a number of 1 or more (only sold items go in history).');
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(x.date || ''));
+    const ms = m ? Date.UTC(+m[1], +m[2] - 1, +m[3], 12) : NaN, chk = new Date(ms);
+    if (!m || chk.getUTCFullYear() !== +m[1] || chk.getUTCMonth() !== +m[2] - 1 || chk.getUTCDate() !== +m[3]) return fail(res, 400, at + 'date must look like 2026-10-19.');
+    if (ms > now() || ms < Date.UTC(2000, 0, 1)) return fail(res, 400, at + 'date cannot be in the future.');
+    let bids = x.bids === undefined || x.bids === '' || x.bids == null ? (price > 0 ? 1 : 0) : Math.floor(+x.bids);
+    if (!(bids >= 0 && bids <= 9999)) return fail(res, 400, at + 'bids must be a number.');
+    if (bids < 1) bids = 1; if (kind === 'fixed') bids = 1;
+    const imgs = Array.isArray(x.imgs) ? x.imgs.slice(0, 10) : [];
+    let parsed;
+    try {
+      parsed = imgs.map(s => {
+        const mm = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(s));
+        if (!mm) throw new Error(at + 'photos must be JPEG, PNG or WebP.');
+        const buf = Buffer.from(mm[2], 'base64');
+        if (buf.length > 600000) throw new Error(at + 'a photo is too large.');
+        return { mime: mm[1], buf };
+      });
+    } catch (e) { return fail(res, 400, e.message); }
+    rows.push({ title, type: x.type, kind, price, bids, ms, parsed, set: String(x.set || '').trim().slice(0, 100) || 'Unknown set', source: String(x.source || '').trim().slice(0, 200) || null });
+  }
+  const ids = db.transaction(() => rows.map(r => {
+    const a = db.prepare("INSERT INTO auctions(seller_id,type,title,set_name,cond,info,start_price,inc,ship_fee,ship_by,ref_price,end_at,status,current_price,bid_count,img_count,created,city,kind,imported,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+      .run(req.user.id, r.type, r.title, r.set, 'Not stated', '', r.price, 10, 0, 'pickup', 0, r.ms, 'closed', r.price, r.bids, r.parsed.length, r.ms, '', r.kind, 1, r.source);
+    r.parsed.forEach((p, i) => db.prepare('INSERT INTO images VALUES(?,?,?,?)').run(a.lastInsertRowid, i, p.mime, p.buf));
+    return a.lastInsertRowid;
+  }))();
+  db.prepare('INSERT INTO audit(actor,action,detail,ts) VALUES(?,?,?,?)').run(req.user.id, 'import_history', JSON.stringify({ count: ids.length }), now());
+  broadcast();
+  res.json({ ok: true, added: ids.length });
+});
+// Hides an imported row (the data stays in the database; real auctions can never be removed).
+app.post('/api/admin/history/:id/remove', auth, adminOnly, (req, res) => {
+  const r = db.prepare("UPDATE auctions SET status='removed' WHERE id=? AND imported=1 AND status='closed'").run(+req.params.id);
+  if (!r.changes) return fail(res, 404, 'Not found.');
+  db.prepare('INSERT INTO audit(actor,action,detail,ts) VALUES(?,?,?,?)').run(req.user.id, 'remove_history', JSON.stringify({ auction: +req.params.id }), now());
+  broadcast();
+  res.json({ ok: true });
+});
+
+// A seller may end their own regular (fixed price) sale at any time, as long as nobody bought it yet. Auctions can never be ended early.
+app.post('/api/auctions/:id/withdraw', auth, (req, res) => {
+  const r = db.prepare("UPDATE auctions SET status='cancelled', end_at=? WHERE id=? AND seller_id=? AND kind='fixed' AND status='live' AND bid_count=0 AND end_at>?").run(now(), +req.params.id, req.user.id, now());
+  if (!r.changes) {
+    const a = db.prepare('SELECT seller_id, kind, status, bid_count FROM auctions WHERE id=?').get(+req.params.id);
+    if (!a || a.seller_id !== req.user.id) return fail(res, 404, 'Not found.');
+    if (a.kind !== 'fixed') return fail(res, 403, 'Auctions cannot be ended early.');
+    return fail(res, 409, a.bid_count ? 'This item was just bought, so it cannot be withdrawn.' : 'This sale already ended.');
+  }
+  broadcast();
+  res.json({ ok: true });
 });
 
 // ---------- Orders and non-payment cases ----------

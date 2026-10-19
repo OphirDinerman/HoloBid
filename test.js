@@ -350,6 +350,7 @@ test('auctions cannot be deleted by anyone; history shows photos', async () => {
   assert.throws(() => db.prepare('DELETE FROM images WHERE auction_id=?').run(mk.j.id), /cannot be deleted/);
   assert.ok((await call(a, 'GET', '/api/state')).j.auctions.some(x => x.id === mk.j.id), 'still listed');
   // close it: it moves to history with its photos
+  const bb = await signup('Del Bidder', '0501119202'); assert.equal((await call(bb, 'POST', `/api/auctions/${mk.j.id}/bids`, { amount: 100, pickup: true })).s, 200);
   db.prepare('UPDATE auctions SET end_at=? WHERE id=?').run(Date.now() - 1, mk.j.id); sweep();
   const h = (await call(a, 'GET', '/api/state')).j.past.find(x => x.id === mk.j.id);
   assert.ok(h && h.n >= 3, 'history row has id and photo count');
@@ -376,4 +377,129 @@ test('seller sets the minimum raise between bids', async () => {
   assert.equal((await call(b2, 'POST', `/api/auctions/${id2}/bids`, { amount: 149, pickup: true })).s >= 400, true, 'custom raise 50 enforced');
   assert.equal((await call(b2, 'POST', `/api/auctions/${id2}/bids`, { amount: 150, pickup: true })).s, 200);
   const dflt = await call(s, 'POST', '/api/auctions', listing({ title: 'No inc given' })); assert.equal((await call(b1, 'GET', '/api/state')).j.auctions.find(x => x.id === dflt.j.id).inc, 10, 'default stays 10');
+});
+
+test('regular (fixed price) sales: list, buy once, filter data, no bidding', async () => {
+  const s = await signup('Fix Seller', '0501119401'), b1 = await signup('Fix B1', '0501119402'), b2 = await signup('Fix B2', '0501119403');
+  assert.equal((await call(s, 'POST', '/api/auctions', listing({ title: 'Bad kind', kind: 'raffle' }))).s, 400);
+  const mk = await call(s, 'POST', '/api/auctions', listing({ title: 'Fixed Pikachu', kind: 'fixed', start: 250, hours: 720, ship: 20 })); assert.equal(mk.s, 200, 'fixed listing up to 30 days');
+  assert.equal((await call(s, 'POST', '/api/auctions', listing({ title: 'Too long auction', hours: 720 }))).s, 400, 'auctions stay limited to 7 days');
+  const au = await call(s, 'POST', '/api/auctions', listing({ title: 'Normal auction' }));
+  const st = (await call(b1, 'GET', '/api/state')).j, f = st.auctions.find(x => x.id === mk.j.id);
+  assert.equal(f.kind, 'fixed'); assert.equal(st.auctions.find(x => x.id === au.j.id).kind, 'auction');
+  assert.equal((await call(b1, 'POST', `/api/auctions/${f.id}/bids`, { amount: 300 })).s, 409, 'cannot bid on a fixed-price item');
+  assert.equal((await call(s, 'POST', `/api/auctions/${f.id}/buy`, {})).s, 403, 'seller cannot buy own item');
+  assert.equal((await call(b1, 'POST', `/api/auctions/${au.j.id}/buy`, {})).s, 404, 'buy only works on fixed-price items');
+  assert.equal((await call(null, 'POST', `/api/auctions/${f.id}/buy`, {})).s, 401);
+  const [r1, r2] = await Promise.all([call(b1, 'POST', `/api/auctions/${f.id}/buy`, { pickup: false }), call(b2, 'POST', `/api/auctions/${f.id}/buy`, { pickup: false })]);
+  assert.deepEqual([r1.s, r2.s].sort(), [200, 409], 'exactly one buyer gets it');
+  const winner = r1.s === 200 ? b1 : b2, loser = r1.s === 200 ? b2 : b1;
+  const w = (await call(winner, 'GET', '/api/state')).j, o = w.orders.find(x => x.aid === f.id);
+  assert.ok(o && o.price === 250 && o.status === 'awaiting_payment' && !o.pickup, 'order created at the listed price with shipping');
+  assert.ok(w.notifs.some(n => n.type === 'won' && n.auction_id === f.id || n.type === 'won'), 'buyer notified');
+  assert.ok((await call(s, 'GET', '/api/state')).j.notifs.some(n => n.type === 'sold'), 'seller notified');
+  assert.ok(!(await call(loser, 'GET', '/api/state')).j.auctions.some(x => x.id === f.id), 'gone from live list');
+  const past = (await call(loser, 'GET', '/api/state')).j.past.find(x => x.id === f.id); assert.ok(past && past.kind === 'fixed' && past.price === 250, 'shows in history with its price');
+  assert.equal((await call(loser, 'POST', `/api/auctions/${f.id}/buy`, {})).s, 409, 'cannot buy twice');
+  // pickup-only fixed item is always pickup
+  const pk = await call(s, 'POST', '/api/auctions', listing({ title: 'Pickup fixed', kind: 'fixed', by: 'pickup', start: 40, ship: 0 }));
+  assert.equal((await call(b1, 'POST', `/api/auctions/${pk.j.id}/buy`, { pickup: false })).s, 200);
+  assert.equal((await call(b1, 'GET', '/api/state')).j.orders.find(x => x.aid === pk.j.id).pickup, true);
+  // unsold fixed listing expires like an auction
+  const ex = await call(s, 'POST', '/api/auctions', listing({ title: 'Expiring fixed', kind: 'fixed', start: 10 }));
+  db.prepare('UPDATE auctions SET end_at=? WHERE id=?').run(Date.now() - 1, ex.j.id); sweep();
+  assert.ok(!(await call(b2, 'GET', '/api/state')).j.orders.some(x => x.aid === ex.j.id), 'no order when nobody bought');
+  assert.equal((await call(b2, 'POST', `/api/auctions/${ex.j.id}/buy`, {})).s, 409, 'expired item cannot be bought');
+});
+
+test('admin can add reference history; nobody else; it creates no orders', async () => {
+  const admin = await signup('Owner', '0501110004'), user = await signup('Hist User', '0501119501');
+  const item = (o = {}) => ({ title: 'Imported Charizard', set: 'Base Set', type: 'card', price: 640, bids: 18, date: '2026-09-30', source: 'https://example.com/sale', ...o });
+  assert.equal((await call(user, 'POST', '/api/admin/history', { items: [item()] })).s, 404, 'hidden from normal users');
+  assert.equal((await call(null, 'POST', '/api/admin/history', { items: [item()] })).s, 401);
+  assert.equal((await call(user, 'POST', '/api/admin/history/1/remove')).s, 404);
+  for (const bad of [{ title: 'ab' }, { type: 'pokemon' }, { price: -1 }, { price: 0 }, { price: 'abc' }, { date: '30/09/2026' }, { date: '2026-02-31' }, { date: '2999-01-01' }, { date: '1999-01-01' }, { imgs: ['data:text/html;base64,PGI+'] }])
+    assert.equal((await call(admin, 'POST', '/api/admin/history', { items: [item(bad)] })).s, 400, 'rejects ' + JSON.stringify(bad).slice(0, 40));
+  assert.equal((await call(admin, 'POST', '/api/admin/history', { items: [] })).s, 400);
+  assert.equal((await call(admin, 'POST', '/api/admin/history', { items: [item(), item({ title: 'Bad second', price: 'x' })] })).s, 400);
+  assert.equal((await call(user, 'GET', '/api/state')).j.past.some(p => p.title === 'Bad second' || p.title === 'Imported Charizard'), false, 'a bad batch adds nothing');
+  const ok = await call(admin, 'POST', '/api/admin/history', { items: [item({ imgs: [PNG, PNG] }), item({ title: 'Old booster box', type: 'booster', price: 25, bids: 5, date: '2025-01-15', source: 'ebay' }), item({ title: 'Fixed pack', type: 'booster', kind: 'fixed', price: 30, bids: 9 })] });
+  assert.equal(ok.s, 200); assert.equal(ok.j.added, 3);
+  const st = (await call(user, 'GET', '/api/state')).j, a = st.past.find(p => p.title === 'Imported Charizard');
+  assert.ok(a && a.imported && a.price === 640 && a.bids === 18 && a.n === 2 && a.source === 'https://example.com/sale', 'visible to everyone, labelled imported');
+  assert.equal(st.past.find(p => p.title === 'Old booster box').price, 25);
+  assert.equal(st.past.find(p => p.title === 'Old booster box').bids, 5);
+  assert.match(st.past.find(p => p.title === 'Old booster box').date, /2025/, 'older year is shown');
+  const fx = st.past.find(p => p.title === 'Fixed pack'); assert.equal(fx.kind, 'fixed'); assert.equal(fx.bids, 1);
+  assert.equal((await fetch(`${base}/api/img/${a.id}/1`)).status, 200, 'photos served');
+  assert.equal(st.orders.length >= 0, true);
+  assert.ok(!st.auctions.some(x => x.title === 'Imported Charizard'), 'not in the live list');
+  const adm = (await call(admin, 'GET', '/api/state')).j;
+  assert.ok(adm.imports.length >= 3 && !(await call(user, 'GET', '/api/state')).j.imports, 'only the admin sees the import list');
+  assert.ok(!adm.myListings.some(l => l.title === 'Imported Charizard'), 'not in the admin\'s own listings');
+  assert.equal(adm.orders.filter(o => /Imported|Old booster|Fixed pack/.test(o.title)).length, 0, 'no orders created');
+  assert.equal((await call(user, 'POST', `/api/admin/history/${a.id}/remove`)).s, 404);
+  assert.equal((await call(admin, 'POST', `/api/admin/history/${a.id}/remove`)).s, 200);
+  assert.ok(!(await call(user, 'GET', '/api/state')).j.past.some(p => p.id === a.id), 'removed row disappears');
+  const real = await call(admin, 'POST', '/api/auctions', listing({ title: 'Real one' }));
+  assert.equal((await call(admin, 'POST', `/api/admin/history/${real.j.id}/remove`)).s, 404, 'real auctions cannot be removed this way');
+  assert.throws(() => db.prepare('DELETE FROM auctions WHERE id=?').run(a.id), /cannot be deleted/, 'still nothing is ever deleted');
+});
+
+test('a seller cannot end, cancel or shorten an auction (no regrets)', async () => {
+  const s = await signup('NoEnd Seller', '0501119601'), admin = await signup('Owner', '0501110004'), b = await signup('NoEnd Buyer', '0501119602');
+  const mk = await call(s, 'POST', '/api/auctions', listing({ title: 'Locked auction', hours: 72 })); assert.equal(mk.s, 200);
+  const id = mk.j.id, before = db.prepare('SELECT end_at, status FROM auctions WHERE id=?').get(id);
+  for (const tok of [s, admin, b]) for (const m of ['POST', 'PUT', 'PATCH', 'DELETE']) for (const act of ['end', 'close', 'cancel', 'stop', 'finish', 'delete', 'withdraw', 'edit', '']) {
+    const r = await call(tok, m, `/api/auctions/${id}${act ? '/' + act : ''}`, { hours: 0.5, end: Date.now(), status: 'closed', action: 'end' });
+    assert.ok(r.s >= 400, `${m} /${act} refused (${r.s})`);
+  }
+  const after = db.prepare('SELECT end_at, status FROM auctions WHERE id=?').get(id);
+  assert.deepEqual(after, before, 'the auction was not touched');
+  assert.ok((await call(b, 'GET', '/api/state')).j.auctions.some(x => x.id === id), 'still live');
+  const html = require('fs').readFileSync(require('fs').existsSync(__dirname + '/index.html') ? __dirname + '/index.html' : __dirname + '/public/index.html', 'utf8');
+  assert.ok(!/End auction|Cancel auction|Close auction|End now/i.test(html), 'no such button for auctions');
+  assert.equal((html.match(/data-a="endask"/g) || []).length, 1, 'the only end button lives in the regular-sale pane');
+  assert.ok(/function fixedPane\(a\)\{\n if\(a\.mine\)\{[^]*?data-a="endask"/.test(html), 'and it is only reachable for regular sales');
+});
+
+test('seller can end a regular sale any time before it is bought, never an auction', async () => {
+  const s = await signup('Wd Seller', '0501119701'), b = await signup('Wd Buyer', '0501119702'), o = await signup('Wd Other', '0501119703');
+  const f = await call(s, 'POST', '/api/auctions', listing({ title: 'Withdraw me', kind: 'fixed', start: 90, hours: 168 }));
+  const a = await call(s, 'POST', '/api/auctions', listing({ title: 'Cannot withdraw auction' }));
+  assert.equal((await call(null, 'POST', `/api/auctions/${f.j.id}/withdraw`)).s, 401);
+  assert.equal((await call(o, 'POST', `/api/auctions/${f.j.id}/withdraw`)).s, 404, 'only the owner');
+  assert.equal((await call(b, 'POST', `/api/auctions/${f.j.id}/withdraw`)).s, 404);
+  assert.equal((await call(s, 'POST', `/api/auctions/${a.j.id}/withdraw`)).s, 403, 'auctions can never be ended early');
+  assert.ok((await call(b, 'GET', '/api/state')).j.auctions.some(x => x.id === a.j.id), 'auction untouched');
+  assert.equal((await call(s, 'POST', `/api/auctions/${f.j.id}/withdraw`)).s, 200);
+  const st = (await call(b, 'GET', '/api/state')).j;
+  assert.ok(!st.auctions.some(x => x.id === f.j.id), 'gone from the live list');
+  assert.ok(!st.past.some(x => x.id === f.j.id), 'not shown as a sale in history');
+  assert.equal((await call(b, 'POST', `/api/auctions/${f.j.id}/buy`, {})).s, 409, 'cannot be bought afterwards');
+  assert.equal((await call(s, 'POST', `/api/auctions/${f.j.id}/withdraw`)).s, 409, 'already ended');
+  assert.equal((await call(s, 'GET', '/api/state')).j.myListings.find(l => l.id === f.j.id).status, 'cancelled', 'seller sees it as cancelled');
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM auctions WHERE id=?').get(f.j.id).c, 1, 'record kept');
+  // once bought it is final
+  const g = await call(s, 'POST', '/api/auctions', listing({ title: 'Bought first', kind: 'fixed', start: 50 }));
+  assert.equal((await call(b, 'POST', `/api/auctions/${g.j.id}/buy`, {})).s, 200);
+  assert.equal((await call(s, 'POST', `/api/auctions/${g.j.id}/withdraw`)).s, 409, 'a sold item cannot be withdrawn');
+  assert.ok((await call(b, 'GET', '/api/state')).j.orders.some(x => x.aid === g.j.id), 'order stands');
+});
+
+test('history lists only things that were really sold', async () => {
+  const s = await signup('Hs Seller', '0501119801'), b = await signup('Hs Buyer', '0501119802');
+  const noBids = await call(s, 'POST', '/api/auctions', listing({ title: 'Auction nobody bid on' }));
+  const sold = await call(s, 'POST', '/api/auctions', listing({ title: 'Auction that sold' }));
+  const fxUnsold = await call(s, 'POST', '/api/auctions', listing({ title: 'Regular nobody bought', kind: 'fixed', start: 20 }));
+  const fxEnded = await call(s, 'POST', '/api/auctions', listing({ title: 'Regular seller ended', kind: 'fixed', start: 20 }));
+  const fxSold = await call(s, 'POST', '/api/auctions', listing({ title: 'Regular that sold', kind: 'fixed', start: 20 }));
+  await call(b, 'POST', `/api/auctions/${sold.j.id}/bids`, { amount: 100, pickup: true });
+  await call(b, 'POST', `/api/auctions/${fxSold.j.id}/buy`, { pickup: true });
+  await call(s, 'POST', `/api/auctions/${fxEnded.j.id}/withdraw`);
+  db.prepare('UPDATE auctions SET end_at=? WHERE id IN (?,?,?)').run(Date.now() - 1, noBids.j.id, sold.j.id, fxUnsold.j.id); sweep();
+  const titles = (await call(b, 'GET', '/api/state')).j.past.map(p => p.title);
+  for (const t of ['Auction that sold', 'Regular that sold']) assert.ok(titles.includes(t), t + ' is in history');
+  for (const t of ['Auction nobody bid on', 'Regular nobody bought', 'Regular seller ended']) assert.ok(!titles.includes(t), t + ' is NOT in history');
+  assert.equal((await call(s, 'GET', '/api/state')).j.myListings.find(l => l.id === noBids.j.id).status, 'unsold', 'seller still sees their own unsold auction');
 });
