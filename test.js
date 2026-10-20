@@ -503,3 +503,15 @@ test('history lists only things that were really sold', async () => {
   for (const t of ['Auction nobody bid on', 'Regular nobody bought', 'Regular seller ended']) assert.ok(!titles.includes(t), t + ' is NOT in history');
   assert.equal((await call(s, 'GET', '/api/state')).j.myListings.find(l => l.id === noBids.j.id).status, 'unsold', 'seller still sees their own unsold auction');
 });
+
+test('regular sales have no time limit', async () => {
+  const s = await signup('NoLimit Seller', '0501119901'), b = await signup('NoLimit Buyer', '0501119902');
+  const body = listing({ title: 'Open ended', kind: 'fixed', start: 60 }); delete body.hours;
+  const mk = await call(s, 'POST', '/api/auctions', body); assert.equal(mk.s, 200, 'no duration needed');
+  const f = (await call(b, 'GET', '/api/state')).j.auctions.find(x => x.id === mk.j.id);
+  assert.ok(f.end - Date.now() > 365 * 864e5, 'stays listed for years');
+  sweep(); assert.ok((await call(b, 'GET', '/api/state')).j.auctions.some(x => x.id === mk.j.id), 'not closed by the sweep');
+  const au = listing({ title: 'Auction needs a duration' }); delete au.hours;
+  assert.equal((await call(s, 'POST', '/api/auctions', au)).s, 400, 'auctions still need a duration');
+  assert.equal((await call(b, 'POST', `/api/auctions/${mk.j.id}/buy`, {})).s, 200, 'can still be bought');
+});
